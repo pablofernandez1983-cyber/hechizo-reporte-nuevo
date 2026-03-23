@@ -684,7 +684,7 @@ def escribir_hoja1(periodos, tabla):
     filas.append([])
     filas.append(["Totales"] + [resultado[p] for p in periodos])
 
-    escribir_hoja(SHEET_ID_RESUMEN, f"Hoja 1!A1:Z{len(filas)+3}", filas)
+    escribir_hoja(SHEET_ID_RESUMEN, f"Hoja 1 Nueva!A1:Z{len(filas)+3}", filas)
     log(f"  Hoja 1: {len(filas)} filas × {len(filas[0])} cols")
 
     log("  ─── Resumen P&L ───")
