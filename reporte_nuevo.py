@@ -266,8 +266,9 @@ def fetch_tiendanube():
 
     # Paso 1: bajar órdenes NUEVAS (since_id > max conocido)
     while True:
-        params = {"page": page, "per_page": 200,
-                  "payment_status": "paid,authorized"}
+          params = {"page": page, "per_page": 200,
+          "payment_status": "paid,authorized",
+          "created_at_min": f"{ANO}-01-01T00:00:00-03:00"}
         if since_id:
             params["since_id"] = since_id
 
