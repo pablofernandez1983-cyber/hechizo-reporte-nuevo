@@ -53,11 +53,11 @@ META_ACCOUNT = os.environ.get("META_AD_ACCOUNT_ID", "")
 SA_JSON      = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 
 # Railway S3 Bucket
-S3_BUCKET   = os.environ.get("BUCKET", "")
-S3_KEY_ID   = os.environ.get("ACCESS_KEY_ID", "")
-S3_SECRET   = os.environ.get("SECRET_ACCESS_KEY", "")
-S3_ENDPOINT = os.environ.get("ENDPOINT", "")
-S3_REGION   = os.environ.get("REGION", "auto")
+S3_BUCKET   = os.environ.get("AWS_S3_BUCKET_NAME", "")
+S3_KEY_ID   = os.environ.get("AWS_ACCESS_KEY_ID", "")
+S3_SECRET   = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+S3_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", "")
+S3_REGION   = os.environ.get("AWS_DEFAULT_REGION", "auto")
 
 PNL_FILAS = [
     ("ventas_min",     "Ventas",                    "Ingresos"),
