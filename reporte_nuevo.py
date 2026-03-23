@@ -406,21 +406,33 @@ def fetch_mercadopago():
     except Exception as e:
         log(f"  [ERROR] MP create: {e}"); return {}
 
+    # Polling igual al original mercadopago_ventas.py: 20 intentos × 30s = 10 minutos
     filename = None
-    for _ in range(20):
-        time.sleep(3)
+    for intento in range(1, 21):
+        time.sleep(30)
         try:
-            files = requests.get(f"{base}/v1/account/settlement_report/list",
-                                 headers=headers).json()
-            if files:
-                latest = max(files, key=lambda x: x.get("date_created", ""))
-                if latest.get("status") in ("ready", "available"):
-                    filename = latest.get("file_name"); break
-        except:
-            pass
+            reportes = requests.get(f"{base}/v1/account/settlement_report/list",
+                                    headers=headers, timeout=30).json()
+            # Buscar nuestro reporte por ID específico (igual que el original)
+            nuestro = next(
+                (rep for rep in reportes if rep.get("id") == report_id),
+                None
+            )
+            if nuestro:
+                status    = nuestro.get("status", "")
+                file_name = nuestro.get("file_name", "")
+                log(f"  MP intento {intento}/20: {status}")
+                if file_name and status == "processed":
+                    filename = file_name; break
+                elif status == "error":
+                    log("  [ERROR] MP reporte falló en la generación"); return {}
+            else:
+                log(f"  MP intento {intento}/20: esperando...")
+        except Exception as e:
+            log(f"  [WARN] MP polling: {e}")
 
     if not filename:
-        log("  [WARN] MP settlement no disponible"); return {}
+        log("  [WARN] MP settlement no disponible después de 10 minutos"); return {}
 
     try:
         content = requests.get(
