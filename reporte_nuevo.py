@@ -1,29 +1,27 @@
 """
 reporte_nuevo.py — Hechizo Bijou P&L mensual
-Reemplaza el workflow KNIME.
+Replica exactamente el workflow KNIME incluyendo todos sus Python asociados.
 
-Cache en Railway S3 Bucket (variables AWS_*):
-  - tn_ordenes.json          -> ordenes TN (acumulativo)
-  - meta_gastos.json         -> gastos Meta Ads diarios
-  - pagonube.json            -> movimientos PagoNube
-  - mp_getnet_historico.json -> Getnet historico ago-2023/ene-2024
-  - correo_historico.json    -> Correo Argentino nov-2020/jul-2024
-  - tn_abono.json            -> abono TN mensual
-  - monotributo.json         -> monotributo mensual
+KNIME ejecuta estos scripts (todos replicados aquí o en la PC de Lore):
+  1. tiendanube_ventas.py    → API TN directa (reemplazado aquí)
+  2. mercadopago_ventas.py   → API MP directa (reemplazado aquí)
+  3. meta_ads_facturacion.py → API Meta directa (reemplazado aquí)
+  4. pagonube_export.py      → Playwright en PC de Lore → sube pagonube.json a S3
 
-Variables Railway (auto con Bucket):
+Cache S3 (variables AWS_*):
+  tn_ordenes.json, meta_gastos.json, pagonube.json,
+  mp_getnet_historico.json, correo_historico.json,
+  tn_abono.json, monotributo.json
+
+Variables Railway:
   AWS_S3_BUCKET_NAME, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
   AWS_ENDPOINT_URL, AWS_DEFAULT_REGION
-
-Variables requeridas:
   GOOGLE_SERVICE_ACCOUNT_JSON
   TIENDANUBE_STORE_ID, TIENDANUBE_ACCESS_TOKEN
   MP_ACCESS_TOKEN, MP_USER_ID
-
-Variables opcionales:
-  META_ACCESS_TOKEN, META_AD_ACCOUNT_ID
-  SHEET_ID_RESUMEN, SHEET_ID_GASTOS, SHEET_ID_GOOGLE_ADS
-  ANO_REPORTE
+  META_ACCESS_TOKEN, META_AD_ACCOUNT_ID (opcional)
+  SHEET_ID_RESUMEN, SHEET_ID_GASTOS, SHEET_ID_GOOGLE_ADS (opcional)
+  ANO_REPORTE (opcional, default=año actual AR)
 """
 
 import os, json, re, time, traceback, requests
@@ -32,9 +30,9 @@ from collections import defaultdict
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # CONFIG
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 
 TZ_AR = timezone(timedelta(hours=-3))
 
@@ -55,14 +53,13 @@ META_TOKEN   = os.environ.get("META_ACCESS_TOKEN", "")
 META_ACCOUNT = os.environ.get("META_AD_ACCOUNT_ID", "")
 SA_JSON      = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 
-# Railway S3 Bucket
 S3_BUCKET   = os.environ.get("AWS_S3_BUCKET_NAME", "")
 S3_KEY_ID   = os.environ.get("AWS_ACCESS_KEY_ID", "")
 S3_SECRET   = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
 S3_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", "")
 S3_REGION   = os.environ.get("AWS_DEFAULT_REGION", "auto")
 
-# --- Estructura del P&L (igual que KNIME Table Creator #240) ---
+# Estructura P&L — igual que KNIME Table Creator #240
 PNL_FILAS = [
     ("ventas_min",     "Ventas",                    "Ingresos"),
     ("envio_min",      "Cobro Envio Minorista",      "Ingresos"),
@@ -92,25 +89,70 @@ CATEGORIAS_EGRESO = [
 ]
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # HELPERS
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 
 def log(msg):
     print(f"[{ahora_ar().strftime('%H:%M:%S')}] {msg}", flush=True)
 
-def mes_key(fecha):
-    """Cualquier fecha -> (anio, mes) o None.
-    Soporta: datetime/date, YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY,
-             Google Ads 'YYYY Mxx d' (ej: '2026 M02 9').
+_MESES_ES = {
+    'ene':1,'feb':2,'mar':3,'abr':4,'may':5,'jun':6,
+    'jul':7,'ago':8,'sep':9,'sept':9,'oct':10,'nov':11,'dic':12
+}
+
+def mes_key(fecha, ano_ctx=None):
+    """Convierte cualquier fecha al tuple (año, mes).
+    Soporta: datetime/date, Excel serial, YYYY-MM-DD, DD/MM/YYYY,
+             'ene-23', 'ene-2023', '31-ene', '31-ene-23', '02-sept',
+             '22-03-2026 20:38:02' (pagonube), '2026 M02 9' (Google Ads).
+    Si la fecha no tiene año usa ano_ctx (default=ANO global).
     """
+    global ANO
+    if ano_ctx is None:
+        ano_ctx = ANO
+
     if isinstance(fecha, (datetime, date)):
         return (fecha.year, fecha.month)
+
+    # Excel serial number
+    try:
+        serial = float(str(fecha).strip())
+        if 30000 < serial < 70000:
+            d = date(1899, 12, 30) + timedelta(days=int(serial))
+            return (d.year, d.month)
+    except (ValueError, TypeError):
+        pass
+
     s = str(fecha).strip()
-    # Formato Google Ads: "2026 M02 9"
+
+    # Google Ads: "2026 M02 9"
     m = re.match(r"(\d{4})\s+M(\d{2})", s)
     if m:
         return (int(m.group(1)), int(m.group(2)))
+
+    # "ene-23" o "ene-2023"
+    m = re.match(r"^([a-záéíóú]+)-(\d{2,4})$", s, re.IGNORECASE)
+    if m:
+        mes_num = _MESES_ES.get(m.group(1).lower()) or _MESES_ES.get(m.group(1).lower()[:3])
+        if mes_num:
+            raw = m.group(2)
+            return (int("20"+raw) if len(raw)==2 else int(raw), mes_num)
+
+    # "31-ene" o "31-ene-23"
+    m = re.match(r"^(\d{1,2})-([a-záéíóú]+)(?:-(\d{2,4}))?$", s, re.IGNORECASE)
+    if m:
+        mes_num = _MESES_ES.get(m.group(2).lower()) or _MESES_ES.get(m.group(2).lower()[:3])
+        if mes_num:
+            if m.group(3):
+                raw = m.group(3)
+                anio = int("20"+raw) if len(raw)==2 else int(raw)
+            else:
+                anio = ano_ctx
+            return (anio, mes_num)
+
+    # Formatos estándar: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY
+    # También captura "22-03-2026 20:38:02" (pagonube) tomando solo los primeros 10 chars
     for ln in [10, 8]:
         sub = s[:ln]
         for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
@@ -127,11 +169,13 @@ def acumular(dic, fecha, valor):
         dic[k] += valor
 
 def safe_float(v):
-    """Convierte cualquier valor numerico a float.
-    Soporta: ARS1,234.56 | 1.234,56 | $1,234.56 | -ARS138.21 | etc.
+    """Convierte cualquier valor numérico a float.
+    Soporta: ARS1,234.56 | 1.234,56 | $ 1.234,56 | -ARS138.21 | etc.
     """
     if v is None or v == "":
         return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
     s = str(v).strip()
     is_neg = s.startswith('-')
     s = re.sub(r'[A-Za-z\$\s]', '', s)
@@ -139,16 +183,11 @@ def safe_float(v):
         s = '-' + s.lstrip('-')
     if not s or s in ('-', '+', '--'):
         return 0.0
-    last_comma = s.rfind(',')
-    last_dot   = s.rfind('.')
-    if last_comma > 0 and last_dot > 0:
-        if last_dot > last_comma:
-            s = s.replace(',', '')
-        else:
-            s = s.replace('.', '').replace(',', '.')
-    elif last_comma > 0:
-        after = s[last_comma+1:]
-        s = s.replace(',', '.') if len(after) <= 2 else s.replace(',', '')
+    lc, ld = s.rfind(','), s.rfind('.')
+    if lc > 0 and ld > 0:
+        s = s.replace(',','') if ld > lc else s.replace('.','').replace(',','.')
+    elif lc > 0:
+        s = s.replace(',','.') if len(s[lc+1:]) <= 2 else s.replace(',','')
     try:
         return float(s)
     except:
@@ -163,9 +202,9 @@ def _col_idx(header_list, *keywords):
     return -1
 
 
-# ===============================================================
-# RAILWAY S3 CACHE
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
+# S3 CACHE
+# ═══════════════════════════════════════════════════════════════
 
 _s3 = None
 
@@ -187,7 +226,6 @@ def get_s3():
             )
         except Exception as e:
             log(f"  [WARN] S3 init: {e}")
-            return None
     return _s3
 
 def s3_leer(key):
@@ -217,9 +255,9 @@ def s3_guardar(key, data):
         return False
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # GOOGLE SHEETS
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 
 _svc = None
 
@@ -256,12 +294,14 @@ def escribir_hoja(sheet_id, rango, valores):
     ).execute()
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # FUENTE 1: TIENDANUBE API con cache S3
-# KNIME: paid+authorized, skip cancelled
-# Minorista/Mayorista por payment_method_id (transfer/deposito = mayorista)
-# NOTA: created_at_min limita a ANO. Sacar para historico completo.
-# ===============================================================
+# Replica tiendanube_ventas.py:
+#   - Descarga órdenes paid+authorized
+#   - Skip cancelled
+#   - Mayorista = payment_method_id contiene "transfer" o "deposito"
+#   - Cache acumulativo por ID en S3
+# ═══════════════════════════════════════════════════════════════
 
 def fetch_tiendanube():
     log("Tiendanube: cargando cache S3...")
@@ -307,17 +347,17 @@ def fetch_tiendanube():
         if len(batch) < 200:
             break
         page += 1
-        time.sleep(0.3)
+        time.sleep(0.5)
 
-    # Refrescar ultimos 30 dias (cambios de estado)
+    # Refrescar últimos 30 días (captura cambios de estado)
     fecha_30d = (ahora_ar() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S-03:00")
-    page2 = 1
-    actualizadas = 0
+    page2 = 1; actualizadas = 0
     while True:
-        params2 = {"page": page2, "per_page": 200, "updated_at_min": fecha_30d}
         try:
             r = requests.get(f"{base}/orders", headers=headers,
-                             params=params2, timeout=30)
+                             params={"page": page2, "per_page": 200,
+                                     "updated_at_min": fecha_30d},
+                             timeout=30)
             r.raise_for_status()
             batch2 = r.json()
         except Exception as e:
@@ -331,29 +371,25 @@ def fetch_tiendanube():
         if len(batch2) < 200:
             break
         page2 += 1
-        time.sleep(0.3)
+        time.sleep(0.5)
 
-    log(f"  TN: {nuevas} nuevas + {actualizadas} actualizadas (ultimos 30 dias)")
-
+    log(f"  TN: {nuevas} nuevas + {actualizadas} actualizadas")
     if nuevas > 0 or actualizadas > 0:
         if s3_guardar("tn_ordenes.json", cache):
-            log(f"  TN cache guardado en S3 ({len(cache)} ordenes)")
-        else:
-            log("  [WARN] TN cache NO guardado")
+            log(f"  TN cache guardado S3 ({len(cache)} ordenes)")
 
     orders = list(cache.values())
     log(f"  TN procesando {len(orders)} ordenes totales")
 
     acum = {k: defaultdict(float) for k in
-            ["ventas_min", "envio_min", "dto_min",
-             "ventas_may", "envio_may", "dto_may"]}
+            ["ventas_min","envio_min","dto_min","ventas_may","envio_may","dto_may"]}
 
     for o in orders:
         if o.get("status") == "cancelled":
             continue
         try:
             dt = datetime.fromisoformat(
-                o.get("created_at", "").replace("Z", "+00:00")
+                o.get("created_at","").replace("Z","+00:00")
             ).astimezone(TZ_AR)
         except:
             continue
@@ -363,11 +399,11 @@ def fetch_tiendanube():
         shipping = safe_float(o.get("shipping_cost_owner", 0))
         discount = safe_float(o.get("discount", 0))
 
+        # Mayorista = transferencia bancaria o depósito
         payment_details = o.get("payment_details") or []
         gateways = [
-            p.get("payment_method_id", "") or ""
-            for p in payment_details
-            if isinstance(p, dict)
+            p.get("payment_method_id","") or ""
+            for p in payment_details if isinstance(p, dict)
         ]
         is_may = any("transfer" in g.lower() or "deposito" in g.lower()
                      for g in gateways)
@@ -380,26 +416,17 @@ def fetch_tiendanube():
     return {k: dict(v) for k, v in acum.items()}
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # FUENTE 2: MERCADOPAGO settlement
-# Polling igual que mercadopago_ventas.py: 20 intentos x 30s
-# ===============================================================
-
-_KW_CORREO   = ["correo argentino", "correo_argentino", "envio_correo",
-                "correo arg", "oca", "andreani_correo"]
-_KW_ANDREANI = ["andreani"]
-_KW_IIBB     = ["retencion", "retención", "iibb", "ingresos brutos",
-                "percepcion", "withholding", "sirtac"]
-_KW_COM_MP   = ["comision", "commission", "fee", "cargo_financiero",
-                "mp_fee", "mercadopago fee"]
-
-def _clasificar_mp(desc):
-    d = (desc or "").lower()
-    if any(k in d for k in _KW_IIBB):      return "ret_iibb"
-    if any(k in d for k in _KW_CORREO):    return "envio_correo"
-    if any(k in d for k in _KW_ANDREANI):  return "envio_andreani"
-    if any(k in d for k in _KW_COM_MP):    return "com_mp"
-    return None
+# Replica mercadopago_ventas.py:
+#   - Genera reporte settlement via API
+#   - CSV usa ";" como separador (CONFIRMADO en mercadopago_ventas.py línea 235)
+#   - Columnas inglés: TRANSACTION_TYPE, FEE_AMOUNT, TAXES_AMOUNT,
+#     SETTLEMENT_NET_AMOUNT, SETTLEMENT_DATE, SOURCE_ID
+#   - FEE_AMOUNT → Comisiones MP (negativo = costo)
+#   - TAXES_AMOUNT → Retenciones IIBB (negativo = costo)
+#   - Polling: 20 intentos x 30s (igual que el script original)
+# ═══════════════════════════════════════════════════════════════
 
 def fetch_mercadopago():
     log("MercadoPago: descargando settlement...")
@@ -414,7 +441,8 @@ def fetch_mercadopago():
 
     report_id = None
     try:
-        r = requests.post(f"{base}/v1/account/settlement_report", headers=headers,
+        r = requests.post(f"{base}/v1/account/settlement_report",
+                          headers=headers,
                           json={"begin_date": inicio, "end_date": fin})
         log(f"  MP create: {r.status_code}")
         report_id = r.json().get("id")
@@ -423,24 +451,27 @@ def fetch_mercadopago():
         log(f"  [ERROR] MP create: {e}")
         return {}
 
+    # Polling igual que mercadopago_ventas.py: 20 intentos x 30s
     filename = None
     for intento in range(1, 21):
         time.sleep(30)
         try:
-            reportes = requests.get(f"{base}/v1/account/settlement_report/list",
-                                    headers=headers, timeout=30).json()
+            reportes = requests.get(
+                f"{base}/v1/account/settlement_report/list",
+                headers=headers, timeout=30
+            ).json()
             nuestro = next(
                 (rep for rep in reportes if rep.get("id") == report_id), None
             )
             if nuestro:
-                status    = nuestro.get("status", "")
-                file_name = nuestro.get("file_name", "")
+                status    = nuestro.get("status","")
+                file_name = nuestro.get("file_name","")
                 log(f"  MP intento {intento}/20: {status}")
                 if file_name and status == "processed":
                     filename = file_name
                     break
                 elif status == "error":
-                    log("  [ERROR] MP reporte fallo")
+                    log("  [ERROR] MP reporte falló")
                     return {}
             else:
                 log(f"  MP intento {intento}/20: esperando...")
@@ -448,7 +479,7 @@ def fetch_mercadopago():
             log(f"  [WARN] MP polling: {e}")
 
     if not filename:
-        log("  [WARN] MP settlement no disponible despues de 10 minutos")
+        log("  [WARN] MP settlement no disponible después de 10 minutos")
         return {}
 
     try:
@@ -460,39 +491,81 @@ def fetch_mercadopago():
         log(f"  [ERROR] MP download: {e}")
         return {}
 
-    acum = {k: defaultdict(float) for k in
-            ["com_mp", "envio_correo", "envio_andreani", "ret_iibb"]}
-
     lines = content.splitlines()
     if not lines:
+        log("  [WARN] MP CSV vacío")
         return {}
 
-    h = [x.strip().upper() for x in lines[0].split(",")]
-    i_date = next((i for i, c in enumerate(h) if "DATE" in c or "FECHA" in c), 0)
-    i_desc = next((i for i, c in enumerate(h) if "DESC" in c), 3)
-    i_net  = next((i for i, c in enumerate(h)
-                   if "NET_CREDIT" in c or "NET_DEBIT" in c or "IMPORTE_NETO" in c), 7)
+    # El CSV de MP usa ";" como separador (mercadopago_ventas.py línea 235)
+    sep = ";"
+    # Double-check: si por alguna razón vino con coma
+    if lines[0].count(",") > lines[0].count(";"):
+        sep = ","
+        log("  [WARN] MP CSV: separador detectado como coma (inesperado)")
 
-    cat_counts = defaultdict(int)
+    log(f"  MP CSV: {len(lines)} lineas, sep='{sep}'")
+    log(f"  MP CSV header: {lines[0][:200]}")
+    if len(lines) > 1:
+        log(f"  MP CSV fila1: {lines[1][:200]}")
+
+    # Parsear header
+    header = [h.strip().strip('"').upper() for h in lines[0].split(sep)]
+    log(f"  MP CSV columnas ({len(header)}): {header[:15]}")
+
+    idx_map = {col: i for i, col in enumerate(header)}
+
+    # Columnas clave (confirmadas del KNIME CSV Reader #118)
+    i_date  = idx_map.get("SETTLEMENT_DATE") or idx_map.get("TRANSACTION_DATE") or 0
+    i_fee   = idx_map.get("FEE_AMOUNT", -1)
+    i_taxes = idx_map.get("TAXES_AMOUNT", -1)
+    i_net   = idx_map.get("SETTLEMENT_NET_AMOUNT", -1)
+    i_type  = idx_map.get("TRANSACTION_TYPE", -1)
+
+    log(f"  MP cols: date={i_date}({header[i_date] if i_date<len(header) else '?'}) "
+        f"fee={i_fee} taxes={i_taxes} net={i_net} type={i_type}")
+
+    com_mp   = defaultdict(float)
+    ret_iibb = defaultdict(float)
+
+    parsed = 0
     for line in lines[1:]:
-        cols = line.split(",")
-        if len(cols) <= max(i_date, i_net):
+        if not line.strip():
             continue
-        fecha = cols[i_date].strip().strip('"')
-        desc  = cols[i_desc].strip().strip('"') if len(cols) > i_desc else ""
-        monto = safe_float(cols[i_net]) if len(cols) > i_net else 0.0
-        cat   = _clasificar_mp(desc)
-        if cat and monto:
-            acumular(acum[cat], fecha, monto)
-            cat_counts[cat] += 1
+        cols = line.split(sep)
+        if len(cols) < 3:
+            continue
 
-    log(f"  MP settlement OK — clasificados: {dict(cat_counts)}")
-    return {k: dict(v) for k, v in acum.items()}
+        fecha  = cols[i_date].strip().strip('"') if i_date < len(cols) else ""
+        fee    = safe_float(cols[i_fee])   if i_fee   >= 0 and i_fee   < len(cols) else 0.0
+        taxes  = safe_float(cols[i_taxes]) if i_taxes >= 0 and i_taxes < len(cols) else 0.0
+
+        if not fecha:
+            continue
+
+        # FEE_AMOUNT → comisiones MP (ya viene negativo en el CSV)
+        if fee:
+            acumular(com_mp, fecha, fee)
+        # TAXES_AMOUNT → retenciones IIBB (ya viene negativo en el CSV)
+        if taxes:
+            acumular(ret_iibb, fecha, taxes)
+
+        parsed += 1
+
+    log(f"  MP settlement OK — {parsed} filas procesadas, "
+        f"com_mp={len(com_mp)} meses, ret_iibb={len(ret_iibb)} meses")
+    return {
+        "com_mp":   dict(com_mp),
+        "ret_iibb": dict(ret_iibb),
+    }
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # FUENTE 3: META ADS con cache S3
-# ===============================================================
+# Replica meta_ads_facturacion.py --auto:
+#   - Siempre actualiza últimos 60 días
+#   - Sin caché: baja desde ene del año
+#   - Graph API v19.0, nivel account, gasto diario
+# ═══════════════════════════════════════════════════════════════
 
 def _meta_descargar_periodo(fecha_desde, fecha_hasta):
     account_id = META_ACCOUNT if META_ACCOUNT.startswith("act_") else f"act_{META_ACCOUNT}"
@@ -511,7 +584,7 @@ def _meta_descargar_periodo(fecha_desde, fecha_hasta):
         r.raise_for_status()
         data = r.json()
         resultados.extend(data.get("data", []))
-        cursor = data.get("paging", {}).get("cursors", {}).get("after")
+        cursor = data.get("paging",{}).get("cursors",{}).get("after")
         if not cursor:
             break
         params["after"] = cursor
@@ -552,48 +625,47 @@ def fetch_meta():
 
     if nuevos > 0:
         if s3_guardar("meta_gastos.json", list(datos_dict.values())):
-            log(f"  Meta cache guardado en S3 ({len(datos_dict)} dias)")
+            log(f"  Meta cache guardado S3 ({len(datos_dict)} dias)")
 
     gastos = defaultdict(float)
     for reg in datos_dict.values():
         spend = safe_float(reg.get("spend", 0))
         if spend:
-            acumular(gastos, reg.get("date_start", ""), -spend)
+            acumular(gastos, reg.get("date_start",""), -spend)
 
     log(f"  Meta: {len(gastos)} meses")
     return {"pub_meta": dict(gastos)}
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # FUENTE 4: GOOGLE ADS (Sheet "Historico")
-# KNIME: solo tipo "Campaigns"/"Campanas" — ignorar Taxes/Adjustments
-# Columna costo: "Costos" con valores "ARS19,729.51"
-# ===============================================================
+# KNIME: solo tipo "Campaigns"/"Campañas", ignora Taxes/Adjustments
+# Columna "Costos" con formato "ARS19,729.51"
+# ═══════════════════════════════════════════════════════════════
 
 def fetch_google_ads():
     log("Google Ads: leyendo desde Sheet...")
     gastos = defaultdict(float)
 
-    for hoja in ["Historico", "historico", "Google Ads", "Hoja 1"]:
+    for hoja in ["Historico","historico","Google Ads","Hoja 1"]:
         rows = leer_hoja(SHEET_ID_GOOGLE_ADS, hoja)
         if not rows or len(rows) < 2:
             continue
         h = rows[0]
-        i_f    = _col_idx(h, "fecha", "date", "dia")
-        i_tipo = _col_idx(h, "tipo", "type")
-        i_c    = _col_idx(h, "costo", "cost", "importe", "gasto", "spend")
+        i_f    = _col_idx(h, "fecha","date","dia")
+        i_tipo = _col_idx(h, "tipo","type")
+        i_c    = _col_idx(h, "costo","cost","importe","gasto","spend")
         if i_f < 0 or i_c < 0:
             log(f"  Google Ads '{hoja}': columnas no encontradas en {h[:6]}")
             continue
 
         filas_ok = 0
         for row in rows[1:]:
-            # Solo tipo Campaigns (KNIME no incluye Taxes/Adjustments)
+            # Solo Campaigns — KNIME excluye Taxes y Adjustments
             if i_tipo >= 0 and len(row) > i_tipo:
                 tipo = str(row[i_tipo]).strip().lower()
                 if tipo and "campaign" not in tipo and "campa" not in tipo:
                     continue
-
             fecha = row[i_f] if len(row) > i_f else None
             val   = safe_float(row[i_c]) if len(row) > i_c and row[i_c] else 0.0
             if fecha and val:
@@ -606,10 +678,20 @@ def fetch_google_ads():
     return {"pub_gads": dict(gastos)}
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # FUENTE 5: PAGONUBE — desde S3 (pagonube.json)
-# Comision = Tasa + Costo Cuota Simple + Costo Cuotas PagoNube (negativos)
-# ===============================================================
+# pagonube_export.py corre en PC de Lore, descarga CSV con Playwright
+# y sube pagonube.json a S3. Railway lo lee desde acá.
+#
+# Columnas (confirmadas del CSV real):
+#   'Fecha de creación' (col4): "22-03-2026 20:38:02" → DD-MM-YYYY HH:MM:SS
+#   'Tasa Pago Nube' (col7): negativo
+#   'Costo de Cuota Simple' (col9): negativo
+#   'Costo de cuotas Pago Nube' (col10): negativo
+#   'Impuestos - IIBB' (col13)
+# Comisión = Tasa + Cuota Simple + Cuotas PagoNube (ya negativos)
+# Skip: devoluciones
+# ═══════════════════════════════════════════════════════════════
 
 def fetch_pagonube():
     log("PagoNube: leyendo desde S3...")
@@ -619,15 +701,27 @@ def fetch_pagonube():
     datos = s3_leer("pagonube.json")
     if not datos:
         log("  [WARN] pagonube.json no encontrado en S3")
+        log("         Correr pagonube_export.py en PC de Lore para actualizarlo")
         return {}
 
+    log(f"  PagoNube JSON: {len(datos)} registros")
+    if datos:
+        log(f"  PagoNube claves muestra: {list(datos[0].keys())[:8]}")
+
+    sin_fecha = 0
     for row in datos:
-        desc = str(row.get("Descripción", row.get("Descripcion", "venta"))).lower()
-        if any(x in desc for x in ["devolucion", "devolución", "refund", "chargeback"]):
+        # Skip devoluciones
+        desc = str(row.get("Descripción", row.get("Descripcion","venta"))).lower()
+        if any(x in desc for x in ["devolucion","devolución","refund","chargeback"]):
             continue
 
-        fecha = row.get("Fecha de creación", row.get("Fecha de creacion", ""))
+        # Fecha: puede tener tilde o no
+        fecha = (row.get("Fecha de creación")
+                 or row.get("Fecha de creacion")
+                 or row.get("Fecha")
+                 or "")
         if not fecha:
+            sin_fecha += 1
             continue
 
         tasa    = safe_float(row.get("Tasa Pago Nube", 0))
@@ -641,13 +735,16 @@ def fetch_pagonube():
         if iibb:
             acumular(ret_iibb, fecha, iibb)
 
-    log(f"  PagoNube: {len(comisiones)} meses ({len(datos)} registros)")
+    if sin_fecha:
+        log(f"  PagoNube: {sin_fecha} registros sin fecha ignorados")
+    log(f"  PagoNube: {len(comisiones)} meses comisiones, {len(ret_iibb)} meses IIBB")
     return {"com_pagonube": dict(comisiones), "ret_iibb_pn": dict(ret_iibb)}
 
 
-# ===============================================================
-# FUENTE 6: MP GETNET HISTORICO — desde S3 (mp_getnet_historico.json)
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
+# FUENTE 6: MP GETNET HISTORICO — desde S3
+# Cubre ago-2023 a ene-2024 (de sales*.xls del KNIME, ya migrado)
+# ═══════════════════════════════════════════════════════════════
 
 def fetch_mp_getnet_historico():
     log("MP Getnet historico: leyendo desde S3...")
@@ -660,7 +757,7 @@ def fetch_mp_getnet_historico():
         return {}
 
     for row in datos:
-        fecha = row.get("fecha", "")
+        fecha = row.get("fecha","")
         com   = safe_float(row.get("comision", 0))
         iibb  = safe_float(row.get("iibb", 0))
         if fecha and com:
@@ -672,27 +769,23 @@ def fetch_mp_getnet_historico():
     return {"com_pagonube_hist": dict(comisiones), "ret_iibb_hist": dict(ret_iibb)}
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # FUENTE 7: DATOS MANUALES (Sheet "Ingresos y Gastos")
+# KNIME lee de Ingresos y Gastos.xlsx con estas solapas exactas
+# (confirmado del KNIME: sheet_name=['Ventas','Sueldos','Publicidad']):
+#   "Ventas"                          → col 2 = Ingreso → Ventas Manuales
+#   "Compra Materia prima - Producto" → col 3 = Egreso  → Compras
+#   "Sueldos"                         → col 3 = Egreso  → Sueldos
+#   "Publicidad"                      → col 3 = Egreso  → Agencia Publicidad
 #
-# KNIME lee de Ingresos y Gastos.xlsx con estas solapas exactas:
-#   "Ventas"     -> col Ingreso = Ventas Manuales
-#   "Compras"    -> col Egreso  = Costo de Mercaderia
-#   "Sueldos"    -> col Egreso  = Sueldos
-#   "Publicidad" -> col Egreso  = Agencia Publicidad
-#
-# Estructura: Fecha(0) | Detalle(1) | Ingreso(2) | Egreso(3)
-#
-# Prueba multiples nombres de solapa. Loguea header y primera fila
-# para diagnostico si algo falla.
-# ===============================================================
+# Formatos de fecha en el Sheet (confirmados de logs):
+#   "ene-23"  → mes_key ✅
+#   "31-ene"  → mes_key ✅ (usa ANO como año)
+#   "02-sept" → mes_key ✅ (usa ANO como año)
+# ═══════════════════════════════════════════════════════════════
 
-def _leer_solapa_gastos(posibles_nombres, modo, label):
-    """
-    Lee una solapa del Sheet Ingresos y Gastos.
-    modo='ingreso' -> suma positivo (col Ingreso)
-    modo='egreso'  -> suma negativo (col Egreso)
-    """
+def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
+    """Lee una solapa del Sheet Ingresos y Gastos."""
     for nombre in posibles_nombres:
         rows = leer_hoja(SHEET_ID_GASTOS, nombre)
         if not rows:
@@ -703,36 +796,31 @@ def _leer_solapa_gastos(posibles_nombres, modo, label):
         if len(rows) > 1:
             log(f"    fila1={rows[1][:5]}")
 
-        # Detectar columnas por nombre, fallback a posiciones KNIME
-        i_f   = _col_idx(h, "fecha", "date")
-        i_ing = _col_idx(h, "ingreso", "entrada", "income")
-        i_egr = _col_idx(h, "egreso", "salida", "gasto", "expense")
+        # Detectar columnas por nombre, fallback a posición KNIME
+        i_f = _col_idx(h, "fecha","date")
+        i_v = _col_idx(h, "ingreso" if es_ingreso else "egreso",
+                       "entrada" if es_ingreso else "salida")
+        if i_f < 0: i_f = 0
+        if i_v < 0: i_v = col_valor
 
-        if i_f   < 0: i_f   = 0
-        if i_ing < 0: i_ing = 2
-        if i_egr < 0: i_egr = 3
-
-        i_v = i_ing if modo == "ingreso" else i_egr
-
-        # Determinar si fila 0 es header o dato
-        primera_celda = rows[0][i_f] if len(rows[0]) > i_f else ""
-        es_header = mes_key(primera_celda) is None
-        data_rows = rows[1:] if es_header else rows
+        # ¿La fila 0 es header?
+        primera = rows[0][i_f] if len(rows[0]) > i_f else ""
+        data_rows = rows[1:] if mes_key(primera) is None else rows
 
         acum = defaultdict(float)
         for row in data_rows:
             f = row[i_f] if len(row) > i_f else None
-            if not f or str(f).strip() in ("", "Fecha", "fecha", "FECHA"):
+            if not f or str(f).strip() in ("","Fecha","fecha","FECHA"):
                 continue
             v = safe_float(row[i_v]) if len(row) > i_v and row[i_v] else 0.0
             if v:
-                acumular(acum, f, v if modo == "ingreso" else -v)
+                acumular(acum, f, v if es_ingreso else -v)
 
-        log(f"    -> {label}: {len(acum)} meses (col{i_v}={h[i_v] if i_v < len(h) else '?'})")
+        col_name = h[i_v] if i_v < len(h) else f"col{i_v}"
+        log(f"    -> {label}: {len(acum)} meses ('{nombre}' col '{col_name}')")
         return dict(acum)
 
-    log(f"    [WARN] {label}: ninguna solapa encontrada en {posibles_nombres}")
-    log(f"    [WARN] Verificar que el Sheet tenga las solapas y datos correctos")
+    log(f"    [WARN] {label}: solapa no encontrada en {posibles_nombres}")
     return {}
 
 
@@ -740,76 +828,55 @@ def fetch_manuales():
     log("Datos manuales: leyendo desde Sheet...")
     result = {}
 
-    # Ventas manuales: "Ventas", col Ingreso
-    result["ventas_manual"] = _leer_solapa_gastos(
-        ["Ventas", "ventas", "Venta"],
-        "ingreso", "Ventas manuales"
-    )
+    result["ventas_manual"] = _leer_solapa(
+        ["Ventas","ventas"], 2, True, "Ventas manuales")
     log(f"  Ventas manuales: {len(result['ventas_manual'])} meses")
 
-    # Compras: "Compras" (nombre KNIME real), col Egreso
-    result["compras"] = _leer_solapa_gastos(
-        ["Compras", "compras", "Compra Materia prima - Producto", "Compra"],
-        "egreso", "Compras"
-    )
+    result["compras"] = _leer_solapa(
+        ["Compra Materia prima - Producto","Compras","compras"], 3, False, "Compras")
     log(f"  Compras: {len(result['compras'])} meses")
 
-    # Sueldos: "Sueldos", col Egreso
-    result["sueldos"] = _leer_solapa_gastos(
-        ["Sueldos", "sueldos", "Sueldo"],
-        "egreso", "Sueldos"
-    )
+    result["sueldos"] = _leer_solapa(
+        ["Sueldos","sueldos"], 3, False, "Sueldos")
     log(f"  Sueldos: {len(result['sueldos'])} meses")
 
-    # Agencia Publicidad: "Publicidad", col Egreso
-    result["pub_agencia"] = _leer_solapa_gastos(
-        ["Publicidad", "publicidad", "Pub"],
-        "egreso", "Agencia pub"
-    )
+    result["pub_agencia"] = _leer_solapa(
+        ["Publicidad","publicidad"], 3, False, "Agencia pub")
     log(f"  Agencia pub: {len(result['pub_agencia'])} meses")
 
-    # --- Historicos desde S3 ---
-
+    # Históricos desde S3 —————————————————————————————————
     correo_s3 = s3_leer("correo_historico.json") or []
-    correo_h = defaultdict(float)
+    correo_h  = defaultdict(float)
     for row in correo_s3:
-        f = row.get("fecha", "")
+        f = row.get("fecha","")
         v = safe_float(row.get("importe", 0))
         if f and v:
-            acumular(correo_h, f, -v)
+            acumular(correo_h, f, -v)   # factura positiva → egreso negativo
     result["correo_hist"] = dict(correo_h)
     log(f"  Correo historico: {len(result['correo_hist'])} meses ({len(correo_s3)} registros)")
 
-    tn_s3 = s3_leer("tn_abono.json") or []
+    tn_s3   = s3_leer("tn_abono.json") or []
     tn_acum = defaultdict(float)
     for row in tn_s3:
-        f = row.get("fecha", "")
-        v = safe_float(row.get("importe", 0))
-        if f and v:
-            acumular(tn_acum, f, v)
+        f = row.get("fecha",""); v = safe_float(row.get("importe",0))
+        if f and v: acumular(tn_acum, f, v)
     result["com_tn"] = {k: -v for k, v in tn_acum.items()}
     log(f"  TN abono: {len(result['com_tn'])} meses")
 
-    mono_s3 = s3_leer("monotributo.json") or []
+    mono_s3   = s3_leer("monotributo.json") or []
     mono_acum = defaultdict(float)
     for row in mono_s3:
-        f = row.get("fecha", "")
-        v = safe_float(row.get("importe", 0))
-        if f and v:
-            acumular(mono_acum, f, v)
+        f = row.get("fecha",""); v = safe_float(row.get("importe",0))
+        if f and v: acumular(mono_acum, f, v)
     result["monotributo"] = {k: -v for k, v in mono_acum.items()}
     log(f"  Monotributo: {len(result['monotributo'])} meses")
 
     return result
 
 
-# ===============================================================
-# COMBINAR TODAS LAS FUENTES
-# Replica logica de join KNIME:
-#   Correo: historico hasta jul-2024, MP settlement desde ago-2024
-#   PagoNube: historico Getnet hasta ene-2024, PagoNube CSV desde ene-2024
-#   IIBB: MP settlement + PagoNube (se acumulan)
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
+# COMBINAR — replica la lógica de join del KNIME
+# ═══════════════════════════════════════════════════════════════
 
 def combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales):
     datos = defaultdict(lambda: defaultdict(float))
@@ -818,51 +885,51 @@ def combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales):
         for k, v in d.items():
             datos[rubro][k] += v
 
-    # Tiendanube
-    for r in ["ventas_min", "envio_min", "dto_min", "ventas_may", "envio_may", "dto_may"]:
-        merge(r, tn.get(r, {}))
+    # TN
+    for r in ["ventas_min","envio_min","dto_min","ventas_may","envio_may","dto_may"]:
+        merge(r, tn.get(r,{}))
 
-    # MercadoPago settlement
-    merge("com_mp",         mp.get("com_mp", {}))
-    merge("envio_andreani", mp.get("envio_andreani", {}))
-    merge("ret_iibb",       mp.get("ret_iibb", {}))
+    # MP settlement: FEE → com_mp, TAXES → ret_iibb
+    merge("com_mp",   mp.get("com_mp",{}))
+    merge("ret_iibb", mp.get("ret_iibb",{}))
 
-    # Correo Argentino: historico hasta jul-2024, MP desde ago-2024
-    for k, v in manuales.get("correo_hist", {}).items():
+    # Correo Argentino:
+    #   histórico S3 (nov-2020 → jul-2024)
+    #   MP settlement no tiene envíos → solo histórico S3
+    for k, v in manuales.get("correo_hist",{}).items():
         datos["envio_correo"][k] += v
-    for k, v in mp.get("envio_correo", {}).items():
-        if k >= (2024, 8) or k not in datos["envio_correo"]:
-            datos["envio_correo"][k] += v
 
-    # PagoNube/Getnet: historico hasta ene-2024, PagoNube CSV desde ene-2024
-    merge("com_pagonube", mp_hist.get("com_pagonube_hist", {}))
-    for k, v in pagonube.get("com_pagonube", {}).items():
+    # PagoNube/Getnet:
+    #   histórico sales*.xls (S3): ago-2023 → ene-2024
+    #   PagoNube CSV (S3): ene-2024 en adelante
+    merge("com_pagonube", mp_hist.get("com_pagonube_hist",{}))
+    for k, v in pagonube.get("com_pagonube",{}).items():
         if k >= (2024, 1):
             datos["com_pagonube"][k] += v
 
-    # IIBB: MP hist Getnet + PagoNube (ambas fuentes se suman)
-    merge("ret_iibb", mp_hist.get("ret_iibb_hist", {}))
-    for k, v in pagonube.get("ret_iibb_pn", {}).items():
+    # IIBB: histórico Getnet + PagoNube (acumulados)
+    merge("ret_iibb", mp_hist.get("ret_iibb_hist",{}))
+    for k, v in pagonube.get("ret_iibb_pn",{}).items():
         if k >= (2024, 1):
             datos["ret_iibb"][k] += v
 
     # Publicidad
-    merge("pub_meta",    meta.get("pub_meta", {}))
-    merge("pub_gads",    gads.get("pub_gads", {}))
-    merge("pub_agencia", manuales.get("pub_agencia", {}))
+    merge("pub_meta",    meta.get("pub_meta",{}))
+    merge("pub_gads",    gads.get("pub_gads",{}))
+    merge("pub_agencia", manuales.get("pub_agencia",{}))
 
     # Manuales del Sheet
-    for r in ["ventas_manual", "compras", "sueldos", "com_tn", "monotributo"]:
-        merge(r, manuales.get(r, {}))
+    for r in ["ventas_manual","compras","sueldos","com_tn","monotributo"]:
+        merge(r, manuales.get(r,{}))
 
     return {rubro: dict(meses) for rubro, meses in datos.items()}
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # CONSTRUIR P&L Y ESCRIBIR
-# Formato igual que KNIME (imagen 2 de referencia):
-#   Row ID | 2026,1 | 2026,2 | ...
-#   Ingresos | subtotal | ...
+# Formato exacto del KNIME (imagen de referencia):
+#   Row ID | 2026,1 | 2026,2 | ... | 2026,12
+#   Ingresos | subtotal ...
 #   Costo de Mercaderia | ...
 #   Gastos por Ventas | ...
 #   Gastos de Comercializacion | ...
@@ -870,12 +937,12 @@ def combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales):
 #   Publicidad | ...
 #   Impuestos | ...
 #   Totales | ...
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 
 def construir_pnl(datos):
     periodos = [(ANO, m) for m in range(1, 13)]
     tabla = {
-        rid: {p: round(datos.get(rid, {}).get(p, 0.0), 2) for p in periodos}
+        rid: {p: round(datos.get(rid,{}).get(p, 0.0), 2) for p in periodos}
         for rid, _, _ in PNL_FILAS
     }
     return periodos, tabla
@@ -885,47 +952,35 @@ def escribir_hoja1(periodos, tabla):
 
     filas = [["Row ID"] + [f"{y},{m}" for y, m in periodos]]
 
-    categorias_orden = [
-        "Ingresos",
-        "Costo de Mercaderia",
-        "Gastos por Ventas",
-        "Gastos de Comercializacion",
-        "Gastos de Administracion",
-        "Publicidad",
-        "Impuestos",
-    ]
-
-    for cat in categorias_orden:
+    for cat in ["Ingresos","Costo de Mercaderia","Gastos por Ventas",
+                "Gastos de Comercializacion","Gastos de Administracion",
+                "Publicidad","Impuestos"]:
         subtotal = [
-            round(sum(tabla.get(r, {}).get(p, 0.0)
+            round(sum(tabla.get(r,{}).get(p, 0.0)
                       for r, _, c in PNL_FILAS if c == cat), 2)
             for p in periodos
         ]
         filas.append([cat] + subtotal)
 
-    ingresos = {p: sum(tabla.get(r, {}).get(p, 0.0)
-                       for r, _, c in PNL_FILAS if c == "Ingresos")
+    ingresos = {p: sum(tabla.get(r,{}).get(p,0.0)
+                       for r,_,c in PNL_FILAS if c == "Ingresos")
                 for p in periodos}
-    egresos  = {p: sum(tabla.get(r, {}).get(p, 0.0)
-                       for r, _, c in PNL_FILAS if c in CATEGORIAS_EGRESO)
+    egresos  = {p: sum(tabla.get(r,{}).get(p,0.0)
+                       for r,_,c in PNL_FILAS if c in CATEGORIAS_EGRESO)
                 for p in periodos}
-    resultado = {p: round(ingresos[p] + egresos[p], 2) for p in periodos}
+    resultado = {p: round(ingresos[p]+egresos[p], 2) for p in periodos}
 
     filas.append(["Totales"] + [resultado[p] for p in periodos])
 
     escribir_hoja(SHEET_ID_RESUMEN, f"'Hoja 1 Nuevo'!A1:Z{len(filas)+3}", filas)
     log(f"  Hoja 1 Nuevo: {len(filas)} filas x {len(filas[0])} cols")
 
-    log("  --- Resumen P&L ---")
+    log("  ─── Resumen P&L ───")
     for p in periodos:
         if ingresos[p] or egresos[p]:
             log(f"  {ANO}/{p[1]:02d}  Ing={ingresos[p]:>14,.0f}  "
                 f"Egr={egresos[p]:>14,.0f}  Res={resultado[p]:>14,.0f}")
 
-
-# ===============================================================
-# TRIGGER
-# ===============================================================
 
 def escribir_trigger(estado, detalle):
     try:
@@ -935,9 +990,9 @@ def escribir_trigger(estado, detalle):
         log(f"  [WARN] trigger: {e}")
 
 
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 # MAIN
-# ===============================================================
+# ═══════════════════════════════════════════════════════════════
 
 def main():
     log("=" * 55)
