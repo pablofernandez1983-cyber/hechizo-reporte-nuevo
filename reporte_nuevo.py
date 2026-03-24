@@ -103,14 +103,15 @@ _MESES_ES = {
 
 def mes_key(fecha, ano_ctx=None):
     """Convierte cualquier fecha al tuple (año, mes).
+
+    ano_ctx=None → fechas SIN año explícito devuelven None
+                   (el caller aplica year carry-forward)
+    ano_ctx=N    → fechas sin año usan N como año
+
     Soporta: datetime/date, Excel serial, YYYY-MM-DD, DD/MM/YYYY,
              'ene-23', 'ene-2023', '31-ene', '31-ene-23', '02-sept',
              '22-03-2026 20:38:02' (pagonube), '2026 M02 9' (Google Ads).
-    Si la fecha no tiene año usa ano_ctx (default=ANO global).
     """
-    global ANO
-    if ano_ctx is None:
-        ano_ctx = ANO
 
     if isinstance(fecha, (datetime, date)):
         return (fecha.year, fecha.month)
@@ -148,8 +149,9 @@ def mes_key(fecha, ano_ctx=None):
                 raw = m.group(3)
                 anio = int("20"+raw) if len(raw)==2 else int(raw)
             else:
-                anio = ano_ctx
-            return (anio, mes_num)
+                if ano_ctx is None:
+                    return None  # señal: sin año explícito
+                return (ano_ctx, mes_num)
 
     # Formatos estándar: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY
     # También captura "22-03-2026 20:38:02" (pagonube) tomando solo los primeros 10 chars
@@ -785,7 +787,12 @@ def fetch_mp_getnet_historico():
 # ═══════════════════════════════════════════════════════════════
 
 def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
-    """Lee una solapa del Sheet Ingresos y Gastos."""
+    """Lee una solapa del Sheet Ingresos y Gastos.
+
+    Year carry-forward: las fechas sin año ('31-ene', '02-sept') usan el
+    último año explícito visto en la columna ('ene-23' → 2023). Esto evita
+    que entradas históricas se asignen incorrectamente al año de reporte.
+    """
     for nombre in posibles_nombres:
         rows = leer_hoja(SHEET_ID_GASTOS, nombre)
         if not rows:
@@ -797,7 +804,7 @@ def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
             log(f"    fila1={rows[1][:5]}")
 
         # Detectar columnas por nombre, fallback a posición KNIME
-        i_f = _col_idx(h, "fecha","date")
+        i_f = _col_idx(h, "fecha", "date")
         i_v = _col_idx(h, "ingreso" if es_ingreso else "egreso",
                        "entrada" if es_ingreso else "salida")
         if i_f < 0: i_f = 0
@@ -808,13 +815,35 @@ def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
         data_rows = rows[1:] if mes_key(primera) is None else rows
 
         acum = defaultdict(float)
+        ultimo_anio = None  # year carry-forward
+
         for row in data_rows:
             f = row[i_f] if len(row) > i_f else None
-            if not f or str(f).strip() in ("","Fecha","fecha","FECHA"):
+            if not f or str(f).strip() in ("", "Fecha", "fecha", "FECHA"):
                 continue
+
+            f_str = str(f).strip()
+
+            # Intentar parsear con año explícito primero
+            k = mes_key(f_str, ano_ctx=None)  # sin contexto
+            if k:
+                ultimo_anio = k[0]  # actualizar año conocido
+            else:
+                # Fecha sin año ("31-ene", "02-sept") → usar último año conocido
+                if ultimo_anio is not None:
+                    k = mes_key(f_str, ano_ctx=ultimo_anio)
+                else:
+                    # Sin contexto previo: asumir año de reporte (primer bloque)
+                    k = mes_key(f_str, ano_ctx=ANO)
+                    if k:
+                        ultimo_anio = k[0]
+
+            if not k:
+                continue
+
             v = safe_float(row[i_v]) if len(row) > i_v and row[i_v] else 0.0
             if v:
-                acumular(acum, f, v if es_ingreso else -v)
+                acum[k] += v if es_ingreso else -v
 
         col_name = h[i_v] if i_v < len(h) else f"col{i_v}"
         log(f"    -> {label}: {len(acum)} meses ('{nombre}' col '{col_name}')")
