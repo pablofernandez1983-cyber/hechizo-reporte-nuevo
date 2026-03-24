@@ -1,11 +1,11 @@
 name: PagoNube Export
 
 on:
-  # Corre todos los lunes a las 6am UTC (3am Argentina)
+  # Corre todos los días a las 9am UTC (6am Argentina)
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '0 9 * * *'
 
-  # También se puede disparar manualmente desde GitHub
+  # Disparar manualmente desde GitHub: Actions → PagoNube Export → Run workflow
   workflow_dispatch:
 
 jobs:
