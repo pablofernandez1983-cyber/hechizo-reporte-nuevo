@@ -384,7 +384,9 @@ def fetch_tiendanube():
     log(f"  TN procesando {len(orders)} ordenes totales")
 
     acum = {k: defaultdict(float) for k in
-            ["ventas_min","envio_min","dto_min","ventas_may","envio_may","dto_may"]}
+            ["ventas_min","envio_min","dto_min",
+             "ventas_may","envio_may","dto_may",
+             "envio_andreani","envio_moto","envio_correo_tn"]}
 
     for o in orders:
         if o.get("status") == "cancelled":
@@ -397,9 +399,13 @@ def fetch_tiendanube():
             continue
         k = (dt.year, dt.month)
 
-        subtotal = safe_float(o.get("subtotal", 0))
-        shipping = safe_float(o.get("shipping_cost_owner", 0))
-        discount = safe_float(o.get("discount", 0))
+        subtotal  = safe_float(o.get("subtotal", 0))
+        # KNIME usa shipping_cost_customer (Costo de envío del CSV)
+        # para Cobro Envío (ingreso) y para clasificar gastos de envío
+        shipping_cust  = safe_float(o.get("shipping_cost_customer", 0))
+        discount  = safe_float(o.get("discount", 0))
+        tracking  = str(o.get("shipping_tracking_number","") or "").lower()
+        medio_env = str(o.get("shipping_option","") or "").lower()
 
         # Mayorista = transferencia bancaria o depósito
         payment_details = o.get("payment_details") or []
@@ -412,8 +418,21 @@ def fetch_tiendanube():
 
         prefix = "may" if is_may else "min"
         acum[f"ventas_{prefix}"][k] += subtotal
-        acum[f"envio_{prefix}"][k]  += shipping
+        # Cobro envío = lo que paga el cliente (ingreso)
+        acum[f"envio_{prefix}"][k]  += shipping_cust
         acum[f"dto_{prefix}"][k]    -= discount
+
+        # Clasificar gasto de envío por carrier (igual que KNIME)
+        # KNIME Row Filter #138: tracking *36000* → Andreani
+        # KNIME Row Filter #143: medio de envío Mot* → Moto
+        # KNIME Row Filter #214: tracking *1978* → Correo Argentino (reciente)
+        if shipping_cust:
+            if "36000" in tracking:
+                acum["envio_andreani"][k]   -= shipping_cust
+            elif medio_env.startswith("mot"):
+                acum["envio_moto"][k]       -= shipping_cust
+            elif "1978" in tracking:
+                acum["envio_correo_tn"][k]  -= shipping_cust
 
     return {k: dict(v) for k, v in acum.items()}
 
@@ -814,8 +833,25 @@ def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
         primera = rows[0][i_f] if len(rows[0]) > i_f else ""
         data_rows = rows[1:] if mes_key(primera) is None else rows
 
+        # Pre-scan: encontrar el primer año explícito para anclar el carry-forward
+        # Si el sheet empieza con "31-ene" (sin año), buscamos el primer "ene-23"
+        # o similar más adelante para saber en qué año estamos.
+        primer_anio_explicito = None
+        for row in data_rows:
+            f = row[i_f] if len(row) > i_f else None
+            if not f: continue
+            k_test = mes_key(str(f).strip(), ano_ctx=None)
+            if k_test:
+                primer_anio_explicito = k_test[0]
+                break
+
+        # Si no hay ningún año explícito en todo el sheet, usar ANO como ancla
+        # (el sheet es probablemente sólo del año actual)
+        if primer_anio_explicito is None:
+            primer_anio_explicito = ANO
+
         acum = defaultdict(float)
-        ultimo_anio = None  # year carry-forward
+        ultimo_anio = primer_anio_explicito  # ancla inicial = primer año explícito
 
         for row in data_rows:
             f = row[i_f] if len(row) > i_f else None
@@ -825,18 +861,12 @@ def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
             f_str = str(f).strip()
 
             # Intentar parsear con año explícito primero
-            k = mes_key(f_str, ano_ctx=None)  # sin contexto
+            k = mes_key(f_str, ano_ctx=None)
             if k:
-                ultimo_anio = k[0]  # actualizar año conocido
+                ultimo_anio = k[0]   # actualizar ancla con año explícito
             else:
-                # Fecha sin año ("31-ene", "02-sept") → usar último año conocido
-                if ultimo_anio is not None:
-                    k = mes_key(f_str, ano_ctx=ultimo_anio)
-                else:
-                    # Sin contexto previo: asumir año de reporte (primer bloque)
-                    k = mes_key(f_str, ano_ctx=ANO)
-                    if k:
-                        ultimo_anio = k[0]
+                # Fecha sin año → carry-forward del último año conocido
+                k = mes_key(f_str, ano_ctx=ultimo_anio)
 
             if not k:
                 continue
@@ -846,6 +876,25 @@ def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
                 acum[k] += v if es_ingreso else -v
 
         col_name = h[i_v] if i_v < len(h) else f"col{i_v}"
+
+        # Post-parse sanity check:
+        # Si el pre-scan no encontró año explícito (usó ANO como ancla)
+        # y ahora hay claves en el futuro (mes > mes actual de ANO),
+        # es señal de que todas son del año anterior.
+        # Ej: Sueldos con "31-ene"..."30-nov" en marzo 2026 → son de 2025.
+        if primer_anio_explicito == ANO and acum:
+            mes_actual = ahora_ar().month
+            hay_futuro = any(
+                anio == ANO and mes > mes_actual
+                for (anio, mes) in acum.keys()
+            )
+            if hay_futuro:
+                acum_shifted = defaultdict(float)
+                for (anio, mes), v in acum.items():
+                    acum_shifted[(anio - 1, mes)] += v
+                acum = acum_shifted
+                log(f"    [FIX] {label}: meses futuros detectados → shift a {ANO-1}")
+
         log(f"    -> {label}: {len(acum)} meses ('{nombre}' col '{col_name}')")
         return dict(acum)
 
@@ -922,10 +971,18 @@ def combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales):
     merge("com_mp",   mp.get("com_mp",{}))
     merge("ret_iibb", mp.get("ret_iibb",{}))
 
+    # Envio Andreani: directo de órdenes TN (tracking *36000*)
+    merge("envio_andreani", tn.get("envio_andreani",{}))
+
+    # Envio Moto: directo de órdenes TN (medio de envío Mot*)
+    merge("envio_moto", tn.get("envio_moto",{}))
+
     # Correo Argentino:
-    #   histórico S3 (nov-2020 → jul-2024)
-    #   MP settlement no tiene envíos → solo histórico S3
+    #   histórico S3 (nov-2020 → jul-2024) — ya negativo en S3
+    #   órdenes TN recientes con tracking *1978* (post-histórico)
     for k, v in manuales.get("correo_hist",{}).items():
+        datos["envio_correo"][k] += v
+    for k, v in tn.get("envio_correo_tn",{}).items():
         datos["envio_correo"][k] += v
 
     # PagoNube/Getnet:
