@@ -273,12 +273,15 @@ def get_svc():
         _svc = build("sheets", "v4", credentials=creds, cache_discovery=False)
     return _svc
 
-def leer_hoja(sheet_id, hoja, rango="A:Z"):
+def leer_hoja(sheet_id, hoja, rango="A:Z", unformatted=False):
     try:
-        res = get_svc().spreadsheets().values().get(
+        kwargs = dict(
             spreadsheetId=sheet_id,
             range=f"'{hoja}'!{rango}"
-        ).execute()
+        )
+        if unformatted:
+            kwargs["valueRenderOption"] = "UNFORMATTED_VALUE"
+        res = get_svc().spreadsheets().values().get(**kwargs).execute()
         return res.get("values", [])
     except Exception as e:
         log(f"  [WARN] leer_hoja '{hoja}': {e}")
@@ -644,9 +647,9 @@ def fetch_meta():
         fecha_actual = fecha_lote_fin + timedelta(days=1)
         time.sleep(0.5)
 
-    if nuevos > 0:
-        if s3_guardar("meta_gastos.json", list(datos_dict.values())):
-            log(f"  Meta cache guardado S3 ({len(datos_dict)} dias)")
+    # Siempre guardar (igual que meta_ads_facturacion.py --auto que siempre actualiza)
+    if s3_guardar("meta_gastos.json", list(datos_dict.values())):
+        log(f"  Meta cache guardado S3 ({len(datos_dict)} dias)")
 
     gastos = defaultdict(float)
     for reg in datos_dict.values():
@@ -813,7 +816,9 @@ def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
     que entradas históricas se asignen incorrectamente al año de reporte.
     """
     for nombre in posibles_nombres:
-        rows = leer_hoja(SHEET_ID_GASTOS, nombre)
+        # UNFORMATTED_VALUE: fechas llegan como serial Excel (ej: 46033)
+        # en lugar de texto "31-ene" → tienen año implícito → sin ambigüedad
+        rows = leer_hoja(SHEET_ID_GASTOS, nombre, unformatted=True)
         if not rows:
             continue
 
