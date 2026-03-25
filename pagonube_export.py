@@ -159,9 +159,24 @@ def export_pagonube(page) -> str | None:
         )
     print(f"[OK] Sesión activa: {page.url}")
 
-    # Ir a PagoNube
-    safe_goto(page, f"{BASE_ADMIN}/payments/pago-nube")
-    pace(section=True)
+    # Ir a PagoNube via link del dashboard
+    # (evita redirect de re-auth que ocurre navegando directo a /payments/pago-nube)
+    print("[NAV] Buscando link de Pago Nube en el dashboard...")
+    try:
+        link = page.get_by_role("link", name="Pago Nube")
+        link.wait_for(state="visible", timeout=15000)
+        link.click()
+        page.wait_for_load_state("domcontentloaded", timeout=30000)
+        pace(section=True)
+        print(f"[OK] Navegado a: {page.url}")
+    except PWTimeout:
+        print("[WARN] Link no encontrado, navegando directo...")
+        page.goto(f"{BASE_ADMIN}/payments/pago-nube",
+                  wait_until="domcontentloaded", timeout=30000)
+        if "code=" in page.url or "sessionId=" in page.url:
+            print("[WAIT] Redirect de re-auth detectado, esperando...")
+            page.wait_for_url("**/payments/pago-nube**", timeout=30000)
+        pace(section=True)
 
     # Esperar el iframe de PagoNube
     frame = page.frame_locator('[data-testid="iframe-app"]')
@@ -170,15 +185,8 @@ def export_pagonube(page) -> str | None:
             timeout=30000, state="visible"
         )
     except PWTimeout:
-        # Intentar navegación directa al link de PagoNube
-        print("[WARN] iframe no encontrado por URL directa, intentando por link...")
-        safe_goto(page, f"{BASE_ADMIN}/dashboard/")
-        page.get_by_role("link", name="Pago Nube").click()
-        pace(section=True)
-        frame = page.frame_locator('[data-testid="iframe-app"]')
-        frame.get_by_role("button", name="Exportar").wait_for(
-            timeout=30000, state="visible"
-        )
+        print(f"[WARN] iframe no encontrado. URL actual: {page.url}")
+        raise RuntimeError("No se encontró el botón Exportar de PagoNube")
 
     # Click en "Exportar listado" si existe (abre modal)
     try:
