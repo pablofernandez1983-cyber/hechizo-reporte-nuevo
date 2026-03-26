@@ -855,7 +855,7 @@ def fetch_mercadopago():
         log(f"  MP CSV fila1: {lines[1][:200]}")
 
     # Parsear header
-    header = [h.strip().strip('"').upper() for h in lines[0].split(sep)]
+    header = [c.strip().strip('"').upper() for c in lines[0].split(sep)]
     log(f"  MP CSV columnas ({len(header)}): {header[:15]}")
 
     idx_map = {col: i for i, col in enumerate(header)}
@@ -902,7 +902,7 @@ def fetch_mercadopago():
     return {
         "com_mp":   dict(com_mp),
         "ret_iibb": dict(ret_iibb),
-        "_raw": {"lines": lines, "header": h, "sep": sep,
+        "_raw": {"lines": lines, "header": header, "sep": sep,
                  "i_date": i_date, "i_fee": i_fee, "i_taxes": i_taxes,
                  "i_net": i_net, "i_type": i_type},
     }
