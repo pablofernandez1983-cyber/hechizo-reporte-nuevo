@@ -59,6 +59,8 @@ S3_SECRET   = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
 S3_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", "")
 S3_REGION   = os.environ.get("AWS_DEFAULT_REGION", "auto")
 
+DATABASE_URL = os.environ.get("DATABASE_URL", "")  # Supabase PostgreSQL
+
 # Estructura P&L — igual que KNIME Table Creator #240
 PNL_FILAS = [
     ("ventas_min",     "Ventas",                    "Ingresos"),
@@ -203,6 +205,326 @@ def _col_idx(header_list, *keywords):
                 return i
     return -1
 
+
+
+
+# ═══════════════════════════════════════════════════════════════
+# SUPABASE — Guarda datos crudos para consultas y drill-down
+# ═══════════════════════════════════════════════════════════════
+
+_db_conn = None
+
+def get_db():
+    """Retorna conexión a Supabase PostgreSQL (lazy, reutilizable)."""
+    global _db_conn
+    if not DATABASE_URL:
+        return None
+    try:
+        if _db_conn is None or _db_conn.closed:
+            import psycopg2
+            _db_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+            _db_conn.autocommit = False
+        return _db_conn
+    except Exception as e:
+        log(f"  [WARN] DB connect: {e}")
+        return None
+
+def db_exec(sql, params=None):
+    """Ejecuta SQL ignorando errores (no bloquea el reporte)."""
+    conn = get_db()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+        conn.commit()
+    except Exception as e:
+        log(f"  [WARN] DB exec: {e}")
+        try:
+            conn.rollback()
+        except:
+            pass
+
+def db_exec_many(sql, rows):
+    """Inserta múltiples filas eficientemente."""
+    if not rows:
+        return
+    conn = get_db()
+    if not conn:
+        return
+    try:
+        import psycopg2.extras
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_batch(cur, sql, rows, page_size=200)
+        conn.commit()
+        return True
+    except Exception as e:
+        log(f"  [WARN] DB exec_many: {e}")
+        try:
+            conn.rollback()
+        except:
+            pass
+        return False
+
+def guardar_ventas_db(orders):
+    """Guarda todas las órdenes de TN en la tabla ventas."""
+    if not DATABASE_URL:
+        return
+    log("  DB: guardando ventas...")
+    rows = []
+    for o in orders:
+        if o.get("status") == "cancelled":
+            continue
+        try:
+            dt = datetime.fromisoformat(
+                o.get("created_at","").replace("Z","+00:00")
+            ).astimezone(TZ_AR)
+        except:
+            continue
+
+        shipping_cust = safe_float(o.get("shipping_cost_customer", 0))
+        tracking = str(o.get("shipping_tracking_number","") or "").lower()
+        medio_env = str(o.get("shipping_option","") or "").lower()
+
+        if "36000" in tracking:
+            carrier = "andreani"
+        elif medio_env.startswith("mot"):
+            carrier = "moto"
+        elif "1978" in tracking:
+            carrier = "correo"
+        else:
+            carrier = "otro"
+
+        payment_details = o.get("payment_details") or []
+        gateways = [p.get("payment_method_id","") or "" for p in payment_details if isinstance(p, dict)]
+        is_may = any("transfer" in g.lower() or "deposito" in g.lower() for g in gateways)
+
+        customer = o.get("customer") or {}
+
+        rows.append((
+            o.get("id"),
+            dt.date(),
+            dt.year,
+            dt.month,
+            customer.get("name",""),
+            customer.get("email",""),
+            safe_float(o.get("subtotal",0)),
+            safe_float(o.get("discount",0)),
+            shipping_cust,
+            safe_float(o.get("total",0)),
+            "mayorista" if is_may else "minorista",
+            carrier,
+            o.get("payment_status",""),
+            o.get("shipping_status",""),
+            str(o.get("gateway_name","") or o.get("gateway","")),
+            str(o.get("shipping_tracking_number","") or ""),
+        ))
+
+    sql = """
+        INSERT INTO ventas
+            (orden_id, fecha, anio, mes, cliente, email,
+             subtotal, descuento, envio_cobrado, total,
+             tipo, carrier, estado_pago, estado_envio, medio_pago, tracking)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (orden_id) DO UPDATE SET
+            subtotal=EXCLUDED.subtotal, descuento=EXCLUDED.descuento,
+            envio_cobrado=EXCLUDED.envio_cobrado, total=EXCLUDED.total,
+            estado_pago=EXCLUDED.estado_pago, estado_envio=EXCLUDED.estado_envio,
+            tracking=EXCLUDED.tracking
+    """
+    ok = db_exec_many(sql, rows)
+    if ok:
+        log(f"  DB: {len(rows)} ventas guardadas")
+
+def guardar_mp_db(lines, header, sep, i_date, i_fee, i_taxes, i_net, i_type):
+    """Guarda líneas del settlement CSV de MP en la tabla mp_settlement."""
+    if not DATABASE_URL:
+        return
+    log("  DB: guardando MP settlement...")
+    rows = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        cols = line.split(sep)
+        if len(cols) < 3:
+            continue
+        fecha_str = cols[i_date].strip().strip('"') if i_date < len(cols) else ""
+        k = mes_key(fecha_str)
+        if not k:
+            continue
+        try:
+            fecha = datetime.strptime(fecha_str[:10], "%Y-%m-%d").date()
+        except:
+            continue
+        source_id = cols[1].strip().strip('"') if len(cols) > 1 else ""
+        tx_type   = cols[i_type].strip().strip('"') if i_type >= 0 and len(cols) > i_type else ""
+        tx_amount = safe_float(cols[7]) if len(cols) > 7 else 0
+        fee       = safe_float(cols[i_fee]) if i_fee >= 0 and len(cols) > i_fee else 0
+        taxes     = safe_float(cols[i_taxes]) if i_taxes >= 0 and len(cols) > i_taxes else 0
+        net       = safe_float(cols[i_net]) if i_net >= 0 and len(cols) > i_net else 0
+        payment   = cols[5].strip().strip('"') if len(cols) > 5 else ""
+        rows.append((source_id, fecha, k[0], k[1], tx_type, tx_amount, fee, taxes, net, payment))
+
+    sql = """
+        INSERT INTO mp_settlement
+            (source_id, fecha, anio, mes, transaction_type,
+             transaction_amount, fee_amount, taxes_amount,
+             settlement_net_amount, payment_method)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (source_id) DO UPDATE SET
+            fee_amount=EXCLUDED.fee_amount, taxes_amount=EXCLUDED.taxes_amount,
+            settlement_net_amount=EXCLUDED.settlement_net_amount
+    """
+    ok = db_exec_many(sql, rows)
+    if ok:
+        log(f"  DB: {len(rows)} filas MP guardadas")
+
+def guardar_pagonube_db(datos):
+    """Guarda movimientos de PagoNube en la tabla pagonube."""
+    if not DATABASE_URL or not datos:
+        return
+    log("  DB: guardando PagoNube...")
+    rows = []
+    for row in datos:
+        desc = str(row.get("Descripción", row.get("Descripcion","venta"))).lower()
+        if any(x in desc for x in ["devolucion","devolución","refund","chargeback"]):
+            continue
+        fecha_str = (row.get("Fecha de creación") or row.get("Fecha de creacion",""))
+        k = mes_key(fecha_str)
+        if not k:
+            continue
+        try:
+            fecha = datetime.strptime(str(fecha_str)[:10], "%d-%m-%Y").date()
+        except:
+            try:
+                fecha = datetime.strptime(str(fecha_str)[:10], "%Y-%m-%d").date()
+            except:
+                continue
+        tasa    = safe_float(row.get("Tasa Pago Nube", 0))
+        cuota_s = safe_float(row.get("Costo de Cuota Simple", 0))
+        cuota_p = safe_float(row.get("Costo de cuotas Pago Nube", 0))
+        iibb    = safe_float(row.get("Impuestos - IIBB", 0))
+        com     = tasa + cuota_s + cuota_p
+        rows.append((
+            str(row.get("Número de venta", row.get("Numero de venta",""))),
+            fecha, k[0], k[1],
+            str(row.get("Cliente","")),
+            str(row.get("Medio de pago","")),
+            safe_float(row.get("Monto de la venta",0)),
+            tasa, cuota_s, cuota_p, iibb, com,
+        ))
+
+    sql = """
+        INSERT INTO pagonube
+            (numero_venta, fecha, anio, mes, cliente, medio_pago,
+             monto_venta, tasa, cuota_simple, cuotas_pagonube, iibb, comision_total)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (numero_venta) DO UPDATE SET
+            tasa=EXCLUDED.tasa, cuota_simple=EXCLUDED.cuota_simple,
+            cuotas_pagonube=EXCLUDED.cuotas_pagonube, iibb=EXCLUDED.iibb,
+            comision_total=EXCLUDED.comision_total
+    """
+    ok = db_exec_many(sql, rows)
+    if ok:
+        log(f"  DB: {len(rows)} movimientos PagoNube guardados")
+
+def guardar_meta_db(datos_dict):
+    """Guarda gasto diario de Meta Ads en la tabla meta_ads."""
+    if not DATABASE_URL or not datos_dict:
+        return
+    log("  DB: guardando Meta Ads...")
+    rows = []
+    for fecha_str, reg in datos_dict.items():
+        try:
+            fecha = datetime.strptime(fecha_str, "%Y-%m-%d").date()
+        except:
+            continue
+        rows.append((
+            fecha, fecha.year, fecha.month,
+            safe_float(reg.get("spend",0)),
+            int(reg.get("impressions",0) or 0),
+            int(reg.get("clicks",0) or 0),
+        ))
+    sql = """
+        INSERT INTO meta_ads (fecha, anio, mes, gasto, impresiones, clicks)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (fecha) DO UPDATE SET
+            gasto=EXCLUDED.gasto, impresiones=EXCLUDED.impresiones, clicks=EXCLUDED.clicks
+    """
+    ok = db_exec_many(sql, rows)
+    if ok:
+        log(f"  DB: {len(rows)} dias Meta guardados")
+
+def guardar_gastos_manuales_db(manuales):
+    """Guarda gastos manuales del Sheet en la tabla gastos_manuales."""
+    if not DATABASE_URL:
+        return
+    log("  DB: guardando gastos manuales...")
+    # Esta función guarda los totales mensuales ya que no tenemos el detalle fila por fila
+    rows = []
+    mapeo = {
+        "compras":       "compras",
+        "sueldos":       "sueldos",
+        "pub_agencia":   "agencia_publicidad",
+        "ventas_manual": "ventas_manuales",
+    }
+    for campo, tipo in mapeo.items():
+        for (anio, mes), monto in manuales.get(campo, {}).items():
+            try:
+                fecha = date(anio, mes, 1)
+            except:
+                continue
+            rows.append((fecha, anio, mes, tipo, "", abs(monto)))
+
+    sql = """
+        INSERT INTO gastos_manuales (fecha, anio, mes, tipo, detalle, monto)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        ON CONFLICT DO NOTHING
+    """
+    ok = db_exec_many(sql, rows)
+    if ok:
+        log(f"  DB: {len(rows)} gastos manuales guardados")
+
+def guardar_pnl_db(periodos, tabla):
+    """Guarda el P&L mensual calculado en la tabla pnl_mensual."""
+    if not DATABASE_URL:
+        return
+    log("  DB: guardando P&L mensual...")
+    rows = []
+    for p in periodos:
+        def cat(c):
+            return round(sum(tabla.get(r,{}).get(p,0) for r,_,cat in PNL_FILAS if cat==c), 2)
+        ingresos = cat("Ingresos")
+        egresos  = sum(cat(c) for c in CATEGORIAS_EGRESO)
+        rows.append((
+            p[0], p[1],
+            ingresos,
+            cat("Costo de Mercaderia"),
+            cat("Gastos por Ventas"),
+            cat("Gastos de Comercializacion"),
+            cat("Gastos de Administracion"),
+            cat("Publicidad"),
+            cat("Impuestos"),
+            round(ingresos + egresos, 2),
+            ahora_ar(),
+        ))
+    sql = """
+        INSERT INTO pnl_mensual
+            (anio, mes, ingresos, costo_mercaderia, gastos_ventas,
+             gastos_comercializacion, gastos_admin, publicidad,
+             impuestos, resultado, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (anio, mes) DO UPDATE SET
+            ingresos=EXCLUDED.ingresos, costo_mercaderia=EXCLUDED.costo_mercaderia,
+            gastos_ventas=EXCLUDED.gastos_ventas,
+            gastos_comercializacion=EXCLUDED.gastos_comercializacion,
+            gastos_admin=EXCLUDED.gastos_admin, publicidad=EXCLUDED.publicidad,
+            impuestos=EXCLUDED.impuestos, resultado=EXCLUDED.resultado,
+            updated_at=EXCLUDED.updated_at
+    """
+    ok = db_exec_many(sql, rows)
+    if ok:
+        log(f"  DB: P&L {len(rows)} meses guardados")
 
 # ═══════════════════════════════════════════════════════════════
 # S3 CACHE
@@ -437,7 +759,7 @@ def fetch_tiendanube():
             elif "1978" in tracking:
                 acum["envio_correo_tn"][k]  -= shipping_cust
 
-    return {k: dict(v) for k, v in acum.items()}
+    return {k: dict(v) for k, v in acum.items()}, orders
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -580,6 +902,9 @@ def fetch_mercadopago():
     return {
         "com_mp":   dict(com_mp),
         "ret_iibb": dict(ret_iibb),
+        "_raw": {"lines": lines, "header": h, "sep": sep,
+                 "i_date": i_date, "i_fee": i_fee, "i_taxes": i_taxes,
+                 "i_net": i_net, "i_type": i_type},
     }
 
 
@@ -1095,7 +1420,7 @@ def main():
         raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON no configurada")
 
     try:
-        tn       = fetch_tiendanube()
+        tn, tn_orders = fetch_tiendanube()
         mp       = fetch_mercadopago()
         meta     = fetch_meta()
         gads     = fetch_google_ads()
@@ -1106,6 +1431,25 @@ def main():
         datos           = combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales)
         periodos, tabla = construir_pnl(datos)
         escribir_hoja1(periodos, tabla)
+
+        # Guardar datos crudos en Supabase
+        if DATABASE_URL:
+            log("Guardando en Supabase...")
+            guardar_ventas_db(tn_orders)
+            raw = mp.get("_raw", {})
+            if raw:
+                guardar_mp_db(raw["lines"], raw["header"], raw["sep"],
+                              raw["i_date"], raw["i_fee"], raw["i_taxes"],
+                              raw["i_net"], raw["i_type"])
+            pagonube_datos = s3_leer("pagonube.json") or []
+            guardar_pagonube_db(pagonube_datos)
+            meta_cache = s3_leer("meta_gastos.json") or []
+            guardar_meta_db({d["date_start"]: d for d in meta_cache})
+            guardar_gastos_manuales_db(manuales)
+            guardar_pnl_db(periodos, tabla)
+            log("Supabase OK")
+        else:
+            log("  [SKIP] DATABASE_URL no configurada — sin Supabase")
 
         escribir_trigger("LISTO", f"OK {ahora_ar().strftime('%d/%m/%Y %H:%M')}")
         log("=" * 55)
