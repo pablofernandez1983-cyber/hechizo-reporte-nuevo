@@ -639,27 +639,23 @@ def fetch_tiendanube():
     cache = s3_leer("tn_ordenes.json") or {}
     log(f"  TN cache: {len(cache)} ordenes")
 
-    since_id = max((int(k) for k in cache.keys()), default=None)
-    if since_id:
-        log(f"  TN bajando desde ID > {since_id}")
-
     headers = {
         "Authentication": f"bearer {TN_TOKEN}",
         "User-Agent": "HechizoBijou-Reporte/1.0 (hechizobijou@gmail.com)"
     }
     base = f"https://api.tiendanube.com/v1/{TN_STORE_ID}"
 
-    nuevas = 0
+    # Replica tiendanube_ventas.py --auto: siempre baja últimos 30 días
+    # (no usa since_id que puede dar 404 si el ID no existe en TN)
+    fecha_30d = (ahora_ar() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S-03:00")
     page = 1
+    actualizadas = 0
     while True:
-        params = {"page": page, "per_page": 200,
-                  "payment_status": "paid,authorized",
-                  "created_at_min": f"{ANO}-01-01T00:00:00-03:00"}
-        if since_id:
-            params["since_id"] = since_id
         try:
             r = requests.get(f"{base}/orders", headers=headers,
-                             params=params, timeout=30)
+                             params={"page": page, "per_page": 200,
+                                     "updated_at_min": fecha_30d},
+                             timeout=30)
             r.raise_for_status()
             batch = r.json()
         except Exception as e:
@@ -669,39 +665,15 @@ def fetch_tiendanube():
             break
         for o in batch:
             cache[str(o["id"])] = o
-            nuevas += 1
-        log(f"  TN pag {page}: {len(batch)} nuevas (total cache {len(cache)})")
+            actualizadas += 1
+        log(f"  TN pag {page}: {len(batch)} ordenes (total cache {len(cache)})")
         if len(batch) < 200:
             break
         page += 1
         time.sleep(0.5)
 
-    # Refrescar últimos 30 días (captura cambios de estado)
-    fecha_30d = (ahora_ar() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S-03:00")
-    page2 = 1; actualizadas = 0
-    while True:
-        try:
-            r = requests.get(f"{base}/orders", headers=headers,
-                             params={"page": page2, "per_page": 200,
-                                     "updated_at_min": fecha_30d},
-                             timeout=30)
-            r.raise_for_status()
-            batch2 = r.json()
-        except Exception as e:
-            log(f"  [ERROR] TN refresh pag {page2}: {e}")
-            break
-        if not batch2:
-            break
-        for o in batch2:
-            cache[str(o["id"])] = o
-            actualizadas += 1
-        if len(batch2) < 200:
-            break
-        page2 += 1
-        time.sleep(0.5)
-
-    log(f"  TN: {nuevas} nuevas + {actualizadas} actualizadas")
-    if nuevas > 0 or actualizadas > 0:
+    log(f"  TN: {actualizadas} ordenes actualizadas (últimos 30 días)")
+    if actualizadas > 0:
         if s3_guardar("tn_ordenes.json", cache):
             log(f"  TN cache guardado S3 ({len(cache)} ordenes)")
 
