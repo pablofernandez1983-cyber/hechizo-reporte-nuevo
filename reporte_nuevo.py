@@ -579,6 +579,34 @@ def fetch_mercadopago():
     if not MP_TOKEN or not MP_USER_ID:
         log("  [SKIP] sin credenciales MP"); return {}
 
+    # ── Cache de 48hs — igual que el script original de KNIME ──
+    cache_mp = s3_leer("mp_settlement_cache.json")
+    if cache_mp:
+        ts_str = cache_mp.get("timestamp","")
+        try:
+            ts = datetime.fromisoformat(ts_str)
+            edad_hs = (ahora_ar() - ts).total_seconds() / 3600
+            if edad_hs < 48:
+                log(f"  MP cache válido ({edad_hs:.1f}hs < 48hs) — saltando descarga")
+                # Claves guardadas como "2026,1" → convertir a tuplas (2026, 1)
+                def str_keys_to_tuple(d):
+                    result = {}
+                    for k, v in d.items():
+                        try:
+                            partes = k.split(",")
+                            result[(int(partes[0]), int(partes[1]))] = v
+                        except Exception:
+                            pass
+                    return result
+                return {
+                    "com_mp":   str_keys_to_tuple(cache_mp.get("com_mp", {})),
+                    "ret_iibb": str_keys_to_tuple(cache_mp.get("ret_iibb", {})),
+                }
+            else:
+                log(f"  MP cache expirado ({edad_hs:.1f}hs) — descargando de nuevo")
+        except Exception:
+            log("  MP cache: timestamp inválido — descargando de nuevo")
+
     headers = {"Authorization": f"Bearer {MP_TOKEN}"}
     base    = "https://api.mercadopago.com"
     inicio  = f"{ANO}-01-01T00:00:00Z"
@@ -659,6 +687,17 @@ def fetch_mercadopago():
         parsed += 1
 
     log(f"  MP settlement OK — {parsed} filas, com_mp={len(com_mp)} meses")
+
+    # Guardar cache con timestamp para skip de 48hs en próximas corridas
+    def dict_to_str_keys(d):
+        return {f"{k[0]},{k[1]}": v for k, v in d.items()}
+    s3_guardar("mp_settlement_cache.json", {
+        "timestamp": ahora_ar().isoformat(),
+        "com_mp":   dict_to_str_keys(com_mp),
+        "ret_iibb": dict_to_str_keys(ret_iibb),
+    })
+    log("  MP cache guardado en S3")
+
     return {
         "com_mp": dict(com_mp), "ret_iibb": dict(ret_iibb),
         "_raw": {"lines": lines, "header": header, "sep": sep,
