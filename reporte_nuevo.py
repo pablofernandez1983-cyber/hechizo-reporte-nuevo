@@ -101,6 +101,7 @@ PNL_FILAS = [
     ("envio_correo",   "Envio Correo Argentino",    "Gastos de Comercializacion"),
     ("envio_andreani", "Envio Andreani",             "Gastos de Comercializacion"),
     ("envio_moto",     "Envio Moto",                "Gastos de Comercializacion"),
+    ("envio_otro",     "Envio Otro",                "Gastos de Comercializacion"),
     ("pub_meta",       "Publicidad Meta",           "Publicidad"),
     ("pub_gads",       "Publicidad Google Ads",     "Publicidad"),
     ("pub_agencia",    "Agencia Publicidad",        "Publicidad"),
@@ -707,7 +708,7 @@ def fetch_tiendanube():
     acum = {k: defaultdict(float) for k in
             ["ventas_min","envio_min","dto_min",
              "ventas_may","envio_may","dto_may",
-             "envio_andreani","envio_moto","envio_correo_tn"]}
+             "envio_andreani","envio_moto","envio_correo_tn","envio_otro"]}
 
     for o in orders:
         if o.get("status") == "cancelled":
@@ -754,6 +755,8 @@ def fetch_tiendanube():
                 acum["envio_moto"][k]       -= shipping_cust
             elif "1978" in tracking:
                 acum["envio_correo_tn"][k]  -= shipping_cust
+            else:
+                acum["envio_otro"][k]       -= shipping_cust
 
     return {k: dict(v) for k, v in acum.items()}, orders
 
@@ -1304,11 +1307,10 @@ def combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales):
     merge("com_mp",   mp.get("com_mp",{}))
     merge("ret_iibb", mp.get("ret_iibb",{}))
 
-    # Envio Andreani: directo de órdenes TN (tracking *36000*)
+    # Envios directo de órdenes TN
     merge("envio_andreani", tn.get("envio_andreani",{}))
-
-    # Envio Moto: directo de órdenes TN (medio de envío Mot*)
-    merge("envio_moto", tn.get("envio_moto",{}))
+    merge("envio_moto",     tn.get("envio_moto",{}))
+    merge("envio_otro",     tn.get("envio_otro",{}))
 
     # Correo Argentino:
     #   histórico S3 (nov-2020 → jul-2024) — ya negativo en S3
