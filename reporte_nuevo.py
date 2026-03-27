@@ -951,6 +951,10 @@ def fetch_manuales():
         if f and v: acumular(tn_acum, f, v)
     result["com_tn"] = {k: -v for k, v in tn_acum.items()}
     log(f"  TN abono: {len(result['com_tn'])} meses")
+    # LOG TEMPORAL: ver detalle de TN abono para 2026
+    for (anio, mes), monto in sorted(result["com_tn"].items()):
+        if anio >= 2025:
+            log(f"    TN abono ({anio},{mes:02d}): {monto:,.2f}")
 
     mono_s3 = s3_leer("monotributo.json") or []
     mono_acum = defaultdict(float)
