@@ -256,7 +256,7 @@ def guardar_ventas_db(orders):
     ok = db_exec_many(sql, rows)
     if ok: log(f"  DB: {len(rows)} ventas guardadas")
 
-def guardar_mp_db(lines, header, sep, i_date, i_fee, i_taxes, i_net, i_type):
+def guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type):
     if not DATABASE_URL: return
     log("  DB: guardando MP settlement...")
     rows = []
@@ -272,19 +272,24 @@ def guardar_mp_db(lines, header, sep, i_date, i_fee, i_taxes, i_net, i_type):
         source_id = cols[1].strip().strip('"') if len(cols) > 1 else ""
         tx_type   = cols[i_type].strip().strip('"') if i_type >= 0 and len(cols) > i_type else ""
         tx_amount = safe_float(cols[7]) if len(cols) > 7 else 0
-        fee    = safe_float(cols[i_fee])   if i_fee   >= 0 and len(cols) > i_fee   else 0
-        taxes  = safe_float(cols[i_taxes]) if i_taxes >= 0 and len(cols) > i_taxes else 0
-        net    = safe_float(cols[i_net])   if i_net   >= 0 and len(cols) > i_net   else 0
-        payment = cols[5].strip().strip('"') if len(cols) > 5 else ""
-        rows.append((source_id, fecha, k[0], k[1], tx_type, tx_amount, fee, taxes, net, payment))
+        fee      = safe_float(cols[i_fee])     if i_fee     >= 0 and len(cols) > i_fee     else 0
+        fin_fee  = safe_float(cols[i_fin_fee]) if i_fin_fee >= 0 and len(cols) > i_fin_fee else 0
+        mkp_fee  = safe_float(cols[i_mkp_fee]) if i_mkp_fee >= 0 and len(cols) > i_mkp_fee else 0
+        taxes    = safe_float(cols[i_taxes])   if i_taxes   >= 0 and len(cols) > i_taxes   else 0
+        net      = safe_float(cols[i_net])     if i_net     >= 0 and len(cols) > i_net     else 0
+        payment  = cols[5].strip().strip('"') if len(cols) > 5 else ""
+        rows.append((source_id, fecha, k[0], k[1], tx_type, tx_amount, fee, fin_fee, mkp_fee, taxes, net, payment))
     sql = """
         INSERT INTO mp_settlement
             (source_id, fecha, anio, mes, transaction_type,
-             transaction_amount, fee_amount, taxes_amount,
-             settlement_net_amount, payment_method)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             transaction_amount, fee_amount, financing_fee_amount, mkp_fee_amount,
+             taxes_amount, settlement_net_amount, payment_method)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (source_id) DO UPDATE SET
-            fee_amount=EXCLUDED.fee_amount, taxes_amount=EXCLUDED.taxes_amount,
+            fee_amount=EXCLUDED.fee_amount,
+            financing_fee_amount=EXCLUDED.financing_fee_amount,
+            mkp_fee_amount=EXCLUDED.mkp_fee_amount,
+            taxes_amount=EXCLUDED.taxes_amount,
             settlement_net_amount=EXCLUDED.settlement_net_amount
     """
     ok = db_exec_many(sql, rows)
@@ -580,8 +585,9 @@ def fetch_mercadopago():
         log("  [SKIP] sin credenciales MP"); return {}
 
     # ── Cache de 48hs — igual que el script original de KNIME ──
+    mp_force_refresh = os.environ.get("MP_FORCE_REFRESH","").lower() in ("1","true","yes")
     cache_mp = s3_leer("mp_settlement_cache.json")
-    if cache_mp:
+    if cache_mp and not mp_force_refresh:
         ts_str = cache_mp.get("timestamp","")
         try:
             ts = datetime.fromisoformat(ts_str)
@@ -666,11 +672,15 @@ def fetch_mercadopago():
     header  = [c.strip().strip('"').upper() for c in lines[0].split(sep)]
     idx_map = {col: i for i, col in enumerate(header)}
 
-    i_date  = idx_map.get("SETTLEMENT_DATE") or idx_map.get("TRANSACTION_DATE") or 0
-    i_fee   = idx_map.get("FEE_AMOUNT", -1)
-    i_taxes = idx_map.get("TAXES_AMOUNT", -1)
-    i_net   = idx_map.get("SETTLEMENT_NET_AMOUNT", -1)
-    i_type  = idx_map.get("TRANSACTION_TYPE", -1)
+    i_date    = idx_map.get("SETTLEMENT_DATE") or idx_map.get("TRANSACTION_DATE") or 0
+    i_fee     = idx_map.get("FEE_AMOUNT", -1)
+    i_fin_fee = idx_map.get("FINANCING_FEE_AMOUNT", -1)
+    i_mkp_fee = idx_map.get("MKP_FEE_AMOUNT", -1)
+    i_taxes   = idx_map.get("TAXES_AMOUNT", -1)
+    i_net     = idx_map.get("SETTLEMENT_NET_AMOUNT", -1)
+    i_type    = idx_map.get("TRANSACTION_TYPE", -1)
+
+    log(f"  MP cols: date={i_date} fee={i_fee} fin_fee={i_fin_fee} mkp_fee={i_mkp_fee} taxes={i_taxes}")
 
     com_mp = defaultdict(float); ret_iibb = defaultdict(float)
     parsed = 0
@@ -678,11 +688,15 @@ def fetch_mercadopago():
         if not line.strip(): continue
         cols = line.split(sep)
         if len(cols) < 3: continue
-        fecha = cols[i_date].strip().strip('"') if i_date < len(cols) else ""
-        fee   = safe_float(cols[i_fee])   if i_fee   >= 0 and i_fee   < len(cols) else 0.0
-        taxes = safe_float(cols[i_taxes]) if i_taxes >= 0 and i_taxes < len(cols) else 0.0
+        fecha   = cols[i_date].strip().strip('"') if i_date < len(cols) else ""
+        fin_fee = safe_float(cols[i_fin_fee]) if i_fin_fee >= 0 and i_fin_fee < len(cols) else 0.0
+        mkp_fee = safe_float(cols[i_mkp_fee]) if i_mkp_fee >= 0 and i_mkp_fee < len(cols) else 0.0
+        taxes   = safe_float(cols[i_taxes])   if i_taxes   >= 0 and i_taxes   < len(cols) else 0.0
         if not fecha: continue
-        if fee:   acumular(com_mp,   fecha, fee)
+        # Comisiones = FINANCING_FEE + MKP_FEE (sin impuestos, igual que KNIME)
+        com = fin_fee + mkp_fee
+        if com:   acumular(com_mp,   fecha, com)
+        # TAXES_AMOUNT → IIBB → Impuestos (una sola vez)
         if taxes: acumular(ret_iibb, fecha, taxes)
         parsed += 1
 
@@ -701,7 +715,8 @@ def fetch_mercadopago():
     return {
         "com_mp": dict(com_mp), "ret_iibb": dict(ret_iibb),
         "_raw": {"lines": lines, "header": header, "sep": sep,
-                 "i_date": i_date, "i_fee": i_fee, "i_taxes": i_taxes,
+                 "i_date": i_date, "i_fee": i_fee, "i_fin_fee": i_fin_fee,
+                 "i_mkp_fee": i_mkp_fee, "i_taxes": i_taxes,
                  "i_net": i_net, "i_type": i_type},
     }
 
@@ -825,6 +840,14 @@ def fetch_pagonube():
     log(f"  PagoNube JSON: {len(datos)} registros")
     if datos: log(f"  PagoNube claves muestra: {list(datos[0].keys())[:8]}")
 
+    # Log columnas disponibles para detectar nombre exacto de IIBB
+    if datos:
+        todas_cols = set()
+        for row in datos[:20]:
+            todas_cols.update(row.keys())
+        iibb_cols = [c for c in todas_cols if "iibb" in c.lower() or "impuesto" in c.lower()]
+        log(f"  PagoNube columnas IIBB encontradas: {iibb_cols}")
+
     sin_fecha = 0
     for row in datos:
         desc = str(row.get("Descripción", row.get("Descripcion","venta"))).lower()
@@ -835,7 +858,11 @@ def fetch_pagonube():
         tasa    = safe_float(row.get("Tasa Pago Nube", 0))
         cuota_s = safe_float(row.get("Costo de Cuota Simple", 0))
         cuota_p = safe_float(row.get("Costo de cuotas Pago Nube", 0))
-        iibb    = safe_float(row.get("Impuestos - IIBB", 0))
+        # Intentar múltiples nombres posibles para IIBB
+        iibb = (safe_float(row.get("Impuestos - IIBB", 0))
+                or safe_float(row.get("IIBB", 0))
+                or safe_float(row.get("Impuesto IIBB", 0))
+                or safe_float(row.get("Impuestos", 0)))
         com = tasa + cuota_s + cuota_p
         if com:   acumular(comisiones, fecha, com)
         if iibb:  acumular(ret_iibb,   fecha, iibb)
@@ -945,16 +972,16 @@ def fetch_manuales():
     log(f"  Correo historico: {len(result['correo_hist'])} meses ({len(correo_s3)} registros)")
 
     tn_s3 = s3_leer("tn_abono.json") or []
-    log(f"  TN abono JSON: {len(tn_s3)} registros — fechas: {[r.get('fecha','') for r in tn_s3[:5]]}")
     tn_acum = defaultdict(float)
+    hoy = (ahora_ar().year, ahora_ar().month)
     for row in tn_s3:
         f = row.get("fecha",""); v = safe_float(row.get("importe",0))
-        if f and v: acumular(tn_acum, f, v)
+        if f and v:
+            k = mes_key(f)
+            if k and k <= hoy:  # filtrar meses futuros
+                tn_acum[k] += v
     result["com_tn"] = {k: -v for k, v in tn_acum.items()}
     log(f"  TN abono: {len(result['com_tn'])} meses")
-    # LOG TEMPORAL: ver TODOS los meses resultantes
-    for (anio, mes), monto in sorted(result["com_tn"].items()):
-        log(f"    TN abono ({anio},{mes:02d}): {monto:,.2f}")
 
     mono_s3 = s3_leer("monotributo.json") or []
     mono_acum = defaultdict(float)
@@ -986,15 +1013,17 @@ def combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales):
     merge("envio_otro",     tn.get("envio_otro",{}))
 
     for k, v in manuales.get("correo_hist",{}).items(): datos["envio_correo"][k] += v
-    for k, v in tn.get("envio_correo_tn",{}).items():   datos["envio_correo"][k] += v
+    for k, v in tn.get("envio_correo_tn",{}).items():
+        if k >= (2024, 8):  # histórico cubre hasta jul-2024
+            datos["envio_correo"][k] += v
 
     merge("com_pagonube", mp_hist.get("com_pagonube_hist",{}))
     for k, v in pagonube.get("com_pagonube",{}).items():
-        if k >= (2024, 1): datos["com_pagonube"][k] += v
+        if k >= (2024, 2): datos["com_pagonube"][k] += v  # Getnet cubre hasta ene-2024
 
     merge("ret_iibb", mp_hist.get("ret_iibb_hist",{}))
     for k, v in pagonube.get("ret_iibb_pn",{}).items():
-        if k >= (2024, 1): datos["ret_iibb"][k] += v
+        if k >= (2024, 2): datos["ret_iibb"][k] += v  # Getnet cubre hasta ene-2024
 
     merge("pub_meta",    meta.get("pub_meta",{}))
     merge("pub_gads",    gads.get("pub_gads",{}))
@@ -1081,7 +1110,8 @@ def main():
             raw = mp.get("_raw", {})
             if raw:
                 guardar_mp_db(raw["lines"], raw["header"], raw["sep"],
-                              raw["i_date"], raw["i_fee"], raw["i_taxes"],
+                              raw["i_date"], raw["i_fee"], raw["i_fin_fee"],
+                              raw["i_mkp_fee"], raw["i_taxes"],
                               raw["i_net"], raw["i_type"])
             pagonube_datos = s3_leer("pagonube.json") or []
             guardar_pagonube_db(pagonube_datos)
