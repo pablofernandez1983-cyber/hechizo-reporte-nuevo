@@ -61,6 +61,30 @@ S3_REGION   = os.environ.get("AWS_DEFAULT_REGION", "auto")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")  # Supabase PostgreSQL
 
+# ── Meta Ads: multiplicador por impuestos (replicado del Rule Engine KNIME)
+# Gasto Meta × multiplicador = costo real incluyendo impuestos
+# Lógica: 2% IIBB + 21% IVA + brecha dólar tarjeta (varió por período)
+# TRUE (default para períodos no definidos) = 1.15
+META_MULTIPLICADOR = {
+    # 2023: todos x1.545
+    (2023,1):1.545,(2023,2):1.545,(2023,3):1.545,(2023,4):1.545,
+    (2023,5):1.545,(2023,6):1.545,(2023,7):1.545,(2023,8):1.545,
+    (2023,9):1.545,(2023,10):1.545,(2023,11):1.545,(2023,12):1.545,
+    # 2024: varía por brecha dólar
+    (2024,1):1.58,(2024,2):1.58,(2024,3):1.43,(2024,4):1.43,
+    (2024,5):1.58,(2024,6):1.68,(2024,7):1.68,(2024,8):1.68,
+    (2024,9):1.48,(2024,10):1.38,(2024,11):1.30,(2024,12):1.30,
+    # 2025
+    (2025,1):1.10,(2025,2):1.15,(2025,3):1.15,(2025,4):1.15,
+    (2025,5):1.15,(2025,6):1.15,(2025,7):1.30,(2025,8):1.05,
+    (2025,9):1.05,(2025,10):1.05,(2025,11):1.05,(2025,12):1.05,
+    # 2026: todos x1.05
+    (2026,1):1.05,(2026,2):1.05,(2026,3):1.05,(2026,4):1.05,
+    (2026,5):1.05,(2026,6):1.05,(2026,7):1.05,(2026,8):1.05,
+    (2026,9):1.05,(2026,10):1.05,(2026,11):1.05,(2026,12):1.05,
+}
+META_MULTIPLICADOR_DEFAULT = 1.15  # TRUE => 1.15
+
 # Estructura P&L — igual que KNIME Table Creator #240
 PNL_FILAS = [
     ("ventas_min",     "Ventas",                    "Ingresos"),
@@ -952,9 +976,13 @@ def fetch_meta():
     for reg in datos_dict.values():
         spend = safe_float(reg.get("spend", 0))
         if spend:
-            acumular(gastos, reg.get("date_start",""), -spend)
+            fecha = reg.get("date_start","")
+            k = mes_key(fecha)
+            if k:
+                mult = META_MULTIPLICADOR.get(k, META_MULTIPLICADOR_DEFAULT)
+                gastos[k] -= spend * mult  # negativo = egreso, con impuestos
 
-    log(f"  Meta: {len(gastos)} meses")
+    log(f"  Meta: {len(gastos)} meses (con multiplicador impuestos)")
     return {"pub_meta": dict(gastos)}
 
 
@@ -965,6 +993,17 @@ def fetch_meta():
 # ═══════════════════════════════════════════════════════════════
 
 def fetch_google_ads():
+    """Lee Google Ads desde Sheet 'Historico'.
+
+    KNIME tiene dos flujos que se concatenan:
+      Flujo 1 (histórico): datos anteriores × 1.5349 × multiplicador impuestos
+      Flujo 2 (Sheet):     Google Sheets Reader → Row Filter Pagos → sin multiplicar
+                           (datos ya en ARS, no necesitan conversión)
+
+    Nosotros leemos el Sheet directamente (Flujo 2).
+    Filtramos Tipo = "Pagos" igual que KNIME Row Filter #173.
+    Sin multiplicadores — los datos del Sheet ya están en ARS.
+    """
     log("Google Ads: leyendo desde Sheet...")
     gastos = defaultdict(float)
 
@@ -975,25 +1014,34 @@ def fetch_google_ads():
         h = rows[0]
         i_f    = _col_idx(h, "fecha","date","dia")
         i_tipo = _col_idx(h, "tipo","type")
-        i_c    = _col_idx(h, "costo","cost","importe","gasto","spend")
+        i_c    = _col_idx(h, "crédit","credit","costo","cost","importe")
         if i_f < 0 or i_c < 0:
-            log(f"  Google Ads '{hoja}': columnas no encontradas en {h[:6]}")
+            log(f"  Google Ads '{hoja}': columnas no encontradas en {h[:8]}")
             continue
+
+        log(f"  Google Ads '{hoja}': cols fecha={i_f} tipo={i_tipo} valor={i_c}({h[i_c] if i_c<len(h) else '?'})")
 
         filas_ok = 0
         for row in rows[1:]:
-            # Solo Campaigns — KNIME excluye Taxes y Adjustments
+            # KNIME Row Filter #173: solo Tipo = "Pagos"
             if i_tipo >= 0 and len(row) > i_tipo:
                 tipo = str(row[i_tipo]).strip().lower()
-                if tipo and "campaign" not in tipo and "campa" not in tipo:
+                if tipo and "pago" not in tipo and "payment" not in tipo:
                     continue
+
             fecha = row[i_f] if len(row) > i_f else None
             val   = safe_float(row[i_c]) if len(row) > i_c and row[i_c] else 0.0
-            if fecha and val:
-                acumular(gastos, fecha, -abs(val))
-                filas_ok += 1
+            if not fecha or not val:
+                continue
 
-        log(f"  Google Ads '{hoja}': {len(gastos)} meses ({filas_ok} filas Campaigns)")
+            k = mes_key(fecha)
+            if not k:
+                continue
+
+            gastos[k] -= abs(val)  # egreso negativo, ya en ARS
+            filas_ok += 1
+
+        log(f"  Google Ads '{hoja}': {len(gastos)} meses ({filas_ok} filas Pagos)")
         break
 
     return {"pub_gads": dict(gastos)}
@@ -1179,23 +1227,6 @@ def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
 
         col_name = h[i_v] if i_v < len(h) else f"col{i_v}"
 
-        # Post-parse sanity check:
-        # Si el pre-scan no encontró año explícito (usó ANO como ancla)
-        # y ahora hay claves en el futuro (mes > mes actual de ANO),
-        # es señal de que todas son del año anterior.
-        # Ej: Sueldos con "31-ene"..."30-nov" en marzo 2026 → son de 2025.
-        if primer_anio_explicito == ANO and acum:
-            mes_actual = ahora_ar().month
-            hay_futuro = any(
-                anio == ANO and mes > mes_actual
-                for (anio, mes) in acum.keys()
-            )
-            if hay_futuro:
-                acum_shifted = defaultdict(float)
-                for (anio, mes), v in acum.items():
-                    acum_shifted[(anio - 1, mes)] += v
-                acum = acum_shifted
-                log(f"    [FIX] {label}: meses futuros detectados → shift a {ANO-1}")
 
         log(f"    -> {label}: {len(acum)} meses ('{nombre}' col '{col_name}')")
         return dict(acum)
