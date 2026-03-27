@@ -945,16 +945,16 @@ def fetch_manuales():
     log(f"  Correo historico: {len(result['correo_hist'])} meses ({len(correo_s3)} registros)")
 
     tn_s3 = s3_leer("tn_abono.json") or []
+    log(f"  TN abono JSON: {len(tn_s3)} registros — fechas: {[r.get('fecha','') for r in tn_s3[:5]]}")
     tn_acum = defaultdict(float)
     for row in tn_s3:
         f = row.get("fecha",""); v = safe_float(row.get("importe",0))
         if f and v: acumular(tn_acum, f, v)
     result["com_tn"] = {k: -v for k, v in tn_acum.items()}
     log(f"  TN abono: {len(result['com_tn'])} meses")
-    # LOG TEMPORAL: ver detalle de TN abono para 2026
+    # LOG TEMPORAL: ver TODOS los meses resultantes
     for (anio, mes), monto in sorted(result["com_tn"].items()):
-        if anio >= 2025:
-            log(f"    TN abono ({anio},{mes:02d}): {monto:,.2f}")
+        log(f"    TN abono ({anio},{mes:02d}): {monto:,.2f}")
 
     mono_s3 = s3_leer("monotributo.json") or []
     mono_acum = defaultdict(float)
