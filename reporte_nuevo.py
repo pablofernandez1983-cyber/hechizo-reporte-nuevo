@@ -570,7 +570,7 @@ def fetch_tiendanube():
         if shipping_cust:
             if "36000" in tracking:
                 acum["envio_andreani"][k]  -= shipping_cust
-            elif ("1978" in tracking):
+            elif "1978" in tracking:
                 acum["envio_correo_tn"][k] -= shipping_cust
             elif ("mot" in medio_env or
                   "mensajer" in medio_env or
@@ -578,6 +578,12 @@ def fetch_tiendanube():
                 acum["envio_moto"][k]      -= shipping_cust
             else:
                 acum["envio_otro"][k]      -= shipping_cust
+                # LOG TEMPORAL: ver shipping_option real para órdenes "otro"
+                if k == (2026, 1):
+                    sh_opt = str(o.get("shipping_option","") or "")
+                    sh_obj = o.get("shipping","") or {}
+                    sh_name = str(sh_obj.get("name","") if isinstance(sh_obj, dict) else sh_obj)
+                    log(f"    [otro] track='{tracking}' opt='{sh_opt}' name='{sh_name}' $={shipping_cust:.0f}")
 
     return {k: dict(v) for k, v in acum.items()}, orders
 
