@@ -215,7 +215,8 @@ def guardar_ventas_db(orders):
     log("  DB: guardando ventas...")
     rows = []
     for o in orders:
-        if o.get("status") in ("cancelled", "voided"): continue
+        if o.get("status") == "cancelled": continue
+        if o.get("payment_status") not in ("paid", "authorized"): continue
         try:
             dt = datetime.fromisoformat(
                 o.get("created_at","").replace("Z","+00:00")
