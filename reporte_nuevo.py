@@ -214,7 +214,7 @@ def guardar_ventas_db(orders):
     log("  DB: guardando ventas...")
     rows = []
     for o in orders:
-        if o.get("status") == "cancelled": continue
+        if o.get("status") in ("cancelled", "voided"): continue
         try:
             dt = datetime.fromisoformat(
                 o.get("created_at","").replace("Z","+00:00")
@@ -575,7 +575,7 @@ def fetch_tiendanube():
         "envio_andreani","envio_moto","envio_correo_tn","envio_otro"]}
 
     for o in orders:
-        if o.get("status") == "cancelled": continue
+        if o.get("status") in ("cancelled", "voided"): continue
         try:
             dt = datetime.fromisoformat(
                 o.get("created_at","").replace("Z","+00:00")).astimezone(TZ_AR)
@@ -1008,17 +1008,29 @@ def fetch_manuales():
     result["correo_hist"] = dict(correo_h)
     log(f"  Correo historico: {len(result['correo_hist'])} meses ({len(correo_s3)} registros)")
 
-    tn_s3 = s3_leer("tn_abono.json") or []
+    # TN abono — leer desde solapa "TN Abono" del Sheet Ingresos y Gastos
+    tn_rows = leer_hoja(SHEET_ID_GASTOS, "TN Abono")
     tn_acum = defaultdict(float)
-    hoy = (ahora_ar().year, ahora_ar().month)
-    for row in tn_s3:
-        f = row.get("fecha",""); v = safe_float(row.get("importe",0))
-        if f and v:
-            k = mes_key(f)
-            if k and k <= hoy:  # filtrar meses futuros
-                tn_acum[k] += v
+    if tn_rows:
+        h = [str(x).strip() for x in tn_rows[0]]
+        i_f = _col_idx(h, "fecha", "date") if mes_key(str(tn_rows[0][0]).strip()) is None else -1
+        data_rows = tn_rows[1:] if i_f >= 0 else tn_rows
+        i_f = max(i_f, 0)
+        i_v = 1  # columna B = importe
+        ultimo_anio = ANO
+        for row in data_rows:
+            f = str(row[i_f]).strip() if len(row) > i_f else ""
+            if not f: continue
+            k = mes_key(f, ano_ctx=None)
+            if k:
+                ultimo_anio = k[0]
+            else:
+                k = mes_key(f, ano_ctx=ultimo_anio)
+            if not k: continue
+            v = safe_float(row[i_v]) if len(row) > i_v and row[i_v] else 0.0
+            if v: tn_acum[k] += v
     result["com_tn"] = {k: -v for k, v in tn_acum.items()}
-    log(f"  TN abono: {len(result['com_tn'])} meses")
+    log(f"  TN abono: {len(result['com_tn'])} meses (desde Sheet)")
 
     mono_s3 = s3_leer("monotributo.json") or []
     mono_acum = defaultdict(float)
