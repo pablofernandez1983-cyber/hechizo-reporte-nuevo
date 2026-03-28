@@ -538,6 +538,20 @@ def fetch_tiendanube():
 
     orders = list(cache.values())
     log(f"  TN procesando {len(orders)} ordenes totales")
+    # LOG TEMPORAL: ver todos los campos de envío de órdenes enero 2026
+    ids_debug = {"1891221034","1875459000","1873008877"}
+    for o_d in orders:
+        if str(o_d.get("id","")) in ids_debug:
+            sh = o_d.get("shipping","")
+            sh_opt = o_d.get("shipping_option","")
+            sh_pick = o_d.get("shipping_pickup_details","")
+            sh_store = o_d.get("shipping_store_branch_name","")
+            log(f"  DEBUG {o_d.get('id')}: opt='{sh_opt}' sh_type='{type(sh).__name__}' sh='{str(sh)[:100]}' pickup='{sh_pick}' store='{sh_store}'")
+    # LOG TEMPORAL: ver shipping_option de órdenes específicas
+    ids_debug = {"1891221034","1875459000","1873008877","1871445226","1869928209"}
+    for o_d in orders:
+        if str(o_d.get("id","")) in ids_debug:
+            log(f"  DEBUG orden {o_d.get('id')}: shipping_option='{o_d.get('shipping_option','')}' shipping='{str(o_d.get('shipping',''))[:80]}'")
 
     acum = {k: defaultdict(float) for k in [
         "ventas_min","envio_min","dto_min",
