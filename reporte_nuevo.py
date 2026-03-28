@@ -1009,7 +1009,7 @@ def fetch_manuales():
     log(f"  Correo historico: {len(result['correo_hist'])} meses ({len(correo_s3)} registros)")
 
     # TN abono — leer desde solapa "TN Abono" del Sheet Ingresos y Gastos
-    tn_rows = leer_hoja(SHEET_ID_GASTOS, "TN Abono")
+    tn_rows = leer_hoja(SHEET_ID_GASTOS, "TN_Abono")
     log(f"  TN Abono Sheet: {len(tn_rows)} filas, primeras 3: {tn_rows[:3]}")
     tn_acum = defaultdict(float)
     if tn_rows:
