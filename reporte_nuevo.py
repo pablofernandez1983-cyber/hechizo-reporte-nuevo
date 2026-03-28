@@ -568,10 +568,16 @@ def fetch_tiendanube():
         acum[f"dto_{prefix}"][k]    -= discount
 
         if shipping_cust:
-            if "36000" in tracking:           acum["envio_andreani"][k]  -= shipping_cust
-            elif medio_env.startswith("mot"): acum["envio_moto"][k]      -= shipping_cust
-            elif "1978" in tracking:          acum["envio_correo_tn"][k] -= shipping_cust
-            else:                             acum["envio_otro"][k]       -= shipping_cust
+            if "36000" in tracking:
+                acum["envio_andreani"][k]  -= shipping_cust
+            elif ("1978" in tracking):
+                acum["envio_correo_tn"][k] -= shipping_cust
+            elif ("mot" in medio_env or
+                  "mensajer" in medio_env or
+                  "mile logis" in medio_env):
+                acum["envio_moto"][k]      -= shipping_cust
+            else:
+                acum["envio_otro"][k]      -= shipping_cust
 
     return {k: dict(v) for k, v in acum.items()}, orders
 
