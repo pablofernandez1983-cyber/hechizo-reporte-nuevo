@@ -15,6 +15,7 @@ ANO = int(os.environ.get("ANO_REPORTE", ahora_ar().year))
 SHEET_ID_RESUMEN    = os.environ.get("SHEET_ID_RESUMEN",    "1nUWfj9u0y7M7n2fNG6v55WnIxAedPpBxQZFUXk28nlI")
 SHEET_ID_GASTOS     = os.environ.get("SHEET_ID_GASTOS",     "1Eswje16JVngNEPTpq8f2-_2tjO8XAbsBBJnCIaqNkRY")
 SHEET_ID_GOOGLE_ADS = os.environ.get("SHEET_ID_GOOGLE_ADS", "1dNJReQ2zxMxRcs0tFTdhdPPAGaXzxqOJIRWDcY9KMPI")
+
 TN_STORE_ID  = os.environ.get("TIENDANUBE_STORE_ID", "")
 TN_TOKEN     = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
 MP_TOKEN     = os.environ.get("MP_ACCESS_TOKEN", "")
@@ -1009,7 +1010,7 @@ def fetch_manuales():
     log(f"  Correo historico: {len(result['correo_hist'])} meses ({len(correo_s3)} registros)")
 
     # TN abono — leer desde solapa "TN Abono" del Sheet Ingresos y Gastos
-    tn_rows = leer_hoja(SHEET_ID_GASTOS, "TN_Abono")
+    tn_rows = leer_hoja(SHEET_ID_GASTOS, "Tiendanube_abono")
     log(f"  TN Abono Sheet: {len(tn_rows)} filas, primeras 3: {tn_rows[:3]}")
     tn_acum = defaultdict(float)
     if tn_rows:
