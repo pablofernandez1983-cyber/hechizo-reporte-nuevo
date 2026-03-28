@@ -251,7 +251,7 @@ def guardar_ventas_db(orders):
             subtotal=EXCLUDED.subtotal, descuento=EXCLUDED.descuento,
             envio_cobrado=EXCLUDED.envio_cobrado, total=EXCLUDED.total,
             estado_pago=EXCLUDED.estado_pago, estado_envio=EXCLUDED.estado_envio,
-            tracking=EXCLUDED.tracking
+            tracking=EXCLUDED.tracking, carrier=EXCLUDED.carrier
     """
     ok = db_exec_many(sql, rows)
     if ok: log(f"  DB: {len(rows)} ventas guardadas")
@@ -512,7 +512,7 @@ def fetch_tiendanube():
         "User-Agent": "HechizoBijou-Reporte/1.0 (hechizobijou@gmail.com)"
     }
     base = f"https://api.tiendanube.com/v1/{TN_STORE_ID}"
-    fecha_30d = (ahora_ar() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S-03:00")
+    fecha_30d = (ahora_ar() - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S-03:00")
     page = 1; actualizadas = 0
     while True:
         try:
@@ -578,12 +578,7 @@ def fetch_tiendanube():
                 acum["envio_moto"][k]      -= shipping_cust
             else:
                 acum["envio_otro"][k]      -= shipping_cust
-                # LOG TEMPORAL: ver shipping_option real para órdenes "otro"
-                if k == (2026, 1):
-                    sh_opt = str(o.get("shipping_option","") or "")
-                    sh_obj = o.get("shipping","") or {}
-                    sh_name = str(sh_obj.get("name","") if isinstance(sh_obj, dict) else sh_obj)
-                    log(f"    [otro] track='{tracking}' opt='{sh_opt}' name='{sh_name}' $={shipping_cust:.0f}")
+
 
     return {k: dict(v) for k, v in acum.items()}, orders
 
