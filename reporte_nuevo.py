@@ -417,6 +417,30 @@ def guardar_pnl_db(periodos, tabla):
     ok = db_exec_many(sql, rows)
     if ok: log(f"  DB: P&L {len(rows)} meses guardados")
 
+def guardar_detalle_pnl_db(periodos, tabla):
+    """Guarda el detalle de cada rubro del P&L en detalle_pnl."""
+    if not DATABASE_URL: return
+    log("  DB: guardando detalle P&L...")
+    rows = []
+    ts = ahora_ar()
+    for rid, descripcion, categoria in PNL_FILAS:
+        for p in periodos:
+            monto = tabla.get(rid, {}).get(p, 0.0)
+            if monto != 0:  # solo guardar rubros con valor
+                rows.append((p[0], p[1], rid, descripcion, categoria, round(monto, 2), ts))
+    sql = """
+        INSERT INTO detalle_pnl
+            (anio, mes, rubro, descripcion, categoria, monto, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (rubro, anio, mes) DO UPDATE SET
+            monto=EXCLUDED.monto,
+            descripcion=EXCLUDED.descripcion,
+            categoria=EXCLUDED.categoria,
+            updated_at=EXCLUDED.updated_at
+    """
+    ok = db_exec_many(sql, rows)
+    if ok: log(f"  DB: detalle P&L {len(rows)} filas guardadas")
+
 # ═══════════════════════════════════════════════════════════════
 # S3 CACHE
 # ═══════════════════════════════════════════════════════════════
@@ -538,15 +562,7 @@ def fetch_tiendanube():
 
     orders = list(cache.values())
     log(f"  TN procesando {len(orders)} ordenes totales")
-    # LOG TEMPORAL: ver todos los campos de envío de órdenes enero 2026
-    ids_debug = {"1891221034","1875459000","1873008877"}
-    for o_d in orders:
-        if str(o_d.get("id","")) in ids_debug:
-            sh = o_d.get("shipping","")
-            sh_opt = o_d.get("shipping_option","")
-            sh_pick = o_d.get("shipping_pickup_details","")
-            sh_store = o_d.get("shipping_store_branch_name","")
-            log(f"  DEBUG {o_d.get('id')}: opt='{sh_opt}' sh_type='{type(sh).__name__}' sh='{str(sh)[:100]}' pickup='{sh_pick}' store='{sh_store}'")
+
     # LOG TEMPORAL: ver shipping_option de órdenes específicas
     ids_debug = {"1891221034","1875459000","1873008877","1871445226","1869928209"}
     for o_d in orders:
@@ -1140,6 +1156,7 @@ def main():
             guardar_meta_db({d["date_start"]: d for d in meta_cache})
             guardar_gastos_manuales_db(manuales)
             guardar_pnl_db(periodos, tabla)
+            guardar_detalle_pnl_db(periodos, tabla)
             log("Supabase OK")
         else:
             log("  [SKIP] DATABASE_URL no configurada — sin Supabase")
