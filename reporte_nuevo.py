@@ -577,7 +577,8 @@ def fetch_tiendanube():
         "envio_andreani","envio_moto","envio_correo_tn","envio_otro"]}
 
     for o in orders:
-        if o.get("status") in ("cancelled", "voided"): continue
+        if o.get("status") == "cancelled": continue
+        if o.get("payment_status") not in ("paid", "authorized"): continue
         try:
             dt = datetime.fromisoformat(
                 o.get("created_at","").replace("Z","+00:00")).astimezone(TZ_AR)
