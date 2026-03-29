@@ -603,13 +603,14 @@ def fetch_tiendanube():
         if shipping_cust:
             if "36000" in tracking:
                 acum["envio_andreani"][k]  -= shipping_cust
-            elif "1978" in tracking:
+            elif "1978" in tracking and tracking:
                 acum["envio_correo_tn"][k] -= shipping_cust
             elif ("mot" in medio_env or
                   "mensajer" in medio_env or
-                  "mile logis" in medio_env):
+                  "mile" in medio_env):
                 acum["envio_moto"][k]      -= shipping_cust
-            else:
+            elif tracking:
+                # solo contar como "otro" si tiene tracking (evita envios nube sin despachar)
                 acum["envio_otro"][k]      -= shipping_cust
 
 
