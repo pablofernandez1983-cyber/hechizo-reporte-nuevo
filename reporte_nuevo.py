@@ -540,26 +540,38 @@ def fetch_tiendanube():
         "User-Agent": "HechizoBijou-Reporte/1.0 (hechizobijou@gmail.com)"
     }
     base = f"https://api.tiendanube.com/v1/{TN_STORE_ID}"
-    fecha_30d = f"{ANO_DESDE}-01-01T00:00:00-03:00"  # historial completo desde ANO_DESDE
-    page = 1; actualizadas = 0
-    while True:
-        try:
-            r = requests.get(f"{base}/orders", headers=headers,
-                             params={"page": page, "per_page": 200, "updated_at_min": fecha_30d},
-                             timeout=30)
-            r.raise_for_status()
-            batch = r.json()
-        except Exception as e:
-            log(f"  [ERROR] TN pag {page}: {e}"); break
-        if not batch: break
-        for o in batch:
-            cache[str(o["id"])] = o
-            actualizadas += 1
-        log(f"  TN pag {page}: {len(batch)} ordenes (total cache {len(cache)})")
-        if len(batch) < 200: break
-        page += 1; time.sleep(0.5)
+    # Bajar historial en ventanas de 90 días para evitar error 500 de TN
+    from datetime import date as _date
+    cursor     = _date(ANO_DESDE, 1, 1)
+    hoy_date   = ahora_ar().date()
+    actualizadas = 0
+    while cursor <= hoy_date:
+        hasta   = min(cursor + timedelta(days=89), hoy_date)
+        p_desde = cursor.strftime("%Y-%m-%dT00:00:00-03:00")
+        p_hasta = hasta.strftime("%Y-%m-%dT23:59:59-03:00")
+        page    = 1
+        while True:
+            try:
+                r = requests.get(f"{base}/orders", headers=headers,
+                                 params={"page": page, "per_page": 200,
+                                         "created_at_min": p_desde,
+                                         "created_at_max": p_hasta},
+                                 timeout=30)
+                r.raise_for_status()
+                batch = r.json()
+            except Exception as e:
+                log(f"  [ERROR] TN {cursor} pag {page}: {e}"); break
+            if not batch: break
+            for o in batch:
+                cache[str(o["id"])] = o
+                actualizadas += 1
+            if len(batch) < 200: break
+            page += 1; time.sleep(0.5)
+        log(f"  TN {cursor.strftime('%Y-%m')} hasta {hasta.strftime('%Y-%m')}: cache {len(cache)} ordenes")
+        cursor = hasta + timedelta(days=1)
+        time.sleep(1)
 
-    log(f"  TN: {actualizadas} ordenes actualizadas (últimos 30 días)")
+    log(f"  TN: {actualizadas} ordenes actualizadas en total")
     if actualizadas > 0:
         if s3_guardar("tn_ordenes.json", cache):
             log(f"  TN cache guardado S3 ({len(cache)} ordenes)")
@@ -658,57 +670,89 @@ def fetch_mercadopago():
 
     headers = {"Authorization": f"Bearer {MP_TOKEN}"}
     base    = "https://api.mercadopago.com"
-    inicio  = f"{ANO}-01-01T00:00:00Z"
-    fin     = f"{min(ahora_ar().date(), date(ANO,12,31)).strftime('%Y-%m-%d')}T23:59:59Z"
 
-    report_id = None
-    try:
-        r = requests.post(f"{base}/v1/account/settlement_report",
-                          headers=headers, json={"begin_date": inicio, "end_date": fin})
-        log(f"  MP create: {r.status_code}")
-        report_id = r.json().get("id")
-        log(f"  MP reporte ID: {report_id}")
-    except Exception as e:
-        log(f"  [ERROR] MP create: {e}"); return {}
-
-    filename = None
-    for intento in range(1, 21):
-        time.sleep(30)
+    def _mp_descargar_bloque(desde_str, hasta_str):
+        """Descarga un bloque de MP settlement y devuelve el texto CSV."""
         try:
-            reportes = requests.get(f"{base}/v1/account/settlement_report/list",
-                                    headers=headers, timeout=30).json()
-            nuestro = next((rep for rep in reportes if rep.get("id") == report_id), None)
-            if nuestro:
-                status    = nuestro.get("status","")
-                file_name = nuestro.get("file_name","")
-                log(f"  MP intento {intento}/20: {status}")
-                if file_name and status == "processed":
-                    filename = file_name; break
-                elif status == "error":
-                    log("  [ERROR] MP reporte falló"); return {}
-            else:
-                log(f"  MP intento {intento}/20: esperando...")
+            r = requests.post(f"{base}/v1/account/settlement_report",
+                              headers=headers,
+                              json={"begin_date": f"{desde_str}T00:00:00Z",
+                                    "end_date":   f"{hasta_str}T23:59:59Z"})
+            if r.status_code not in (200, 202):
+                log(f"  [WARN] MP create {desde_str}: {r.status_code}"); return None
+            report_id = r.json().get("id")
+            log(f"  MP bloque {desde_str} → {hasta_str}: ID {report_id}")
         except Exception as e:
-            log(f"  [WARN] MP polling: {e}")
+            log(f"  [ERROR] MP create {desde_str}: {e}"); return None
 
-    if not filename:
-        log("  [WARN] MP settlement no disponible después de 10 minutos"); return {}
+        filename = None
+        for intento in range(1, 21):
+            time.sleep(30)
+            try:
+                reportes = requests.get(f"{base}/v1/account/settlement_report/list",
+                                        headers=headers, timeout=30).json()
+                nuestro = next((rep for rep in reportes if rep.get("id") == report_id), None)
+                if nuestro:
+                    status    = nuestro.get("status","")
+                    file_name = nuestro.get("file_name","")
+                    log(f"  MP intento {intento}/20: {status}")
+                    if file_name and status == "processed":
+                        filename = file_name; break
+                    elif status == "error":
+                        log("  [ERROR] MP reporte falló"); return None
+                else:
+                    log(f"  MP intento {intento}/20: esperando...")
+            except Exception as e:
+                log(f"  [WARN] MP polling: {e}")
 
-    try:
-        content = requests.get(f"{base}/v1/account/settlement_report/{filename}",
-                               headers=headers, timeout=60).text
-    except Exception as e:
-        log(f"  [ERROR] MP download: {e}"); return {}
+        if not filename:
+            log(f"  [WARN] MP bloque {desde_str} no disponible"); return None
 
-    lines = content.splitlines()
-    if not lines:
-        log("  [WARN] MP CSV vacío"); return {}
+        try:
+            content = requests.get(f"{base}/v1/account/settlement_report/{filename}",
+                                   headers=headers, timeout=60).text
+            log(f"  MP bloque {desde_str}: {len(content.splitlines())} líneas")
+            return content
+        except Exception as e:
+            log(f"  [ERROR] MP download {desde_str}: {e}"); return None
 
+    # Dividir en bloques de 90 días desde ANO_DESDE hasta hoy
+    from datetime import date as _date
+    cursor_mp  = _date(ANO_DESDE, 1, 1)
+    hoy_mp     = ahora_ar().date()
+    bloques_mp = []
+    while cursor_mp <= hoy_mp:
+        hasta_mp = min(cursor_mp + timedelta(days=89), hoy_mp)
+        bloques_mp.append((cursor_mp.strftime("%Y-%m-%d"), hasta_mp.strftime("%Y-%m-%d")))
+        cursor_mp = hasta_mp + timedelta(days=1)
+
+    log(f"  MP: {len(bloques_mp)} bloques a descargar desde {ANO_DESDE}")
+
+    # Acumular todas las líneas de todos los bloques
+    todas_las_lines = []
+    header_ref = None
+    for i, (desde, hasta) in enumerate(bloques_mp, 1):
+        log(f"  MP bloque {i}/{len(bloques_mp)}: {desde} → {hasta}")
+        content = _mp_descargar_bloque(desde, hasta)
+        if not content:
+            continue
+        lines_bloque = content.splitlines()
+        if not lines_bloque: continue
+        if header_ref is None:
+            header_ref = lines_bloque[0]
+            todas_las_lines.extend(lines_bloque)
+        else:
+            todas_las_lines.extend(lines_bloque[1:])  # skip header en bloques siguientes
+
+    if not todas_las_lines:
+        log("  [WARN] MP settlement vacío"); return {}
+
+    lines = todas_las_lines
     sep = ";"
     if lines[0].count(",") > lines[0].count(";"):
         sep = ","; log("  [WARN] MP CSV: separador detectado como coma")
 
-    log(f"  MP CSV: {len(lines)} lineas, sep='{sep}'")
+    log(f"  MP CSV total: {len(lines)} lineas, sep='{sep}'")
     log(f"  MP CSV header: {lines[0][:200]}")
     if len(lines) > 1: log(f"  MP CSV fila1: {lines[1][:200]}")
 
@@ -736,10 +780,8 @@ def fetch_mercadopago():
         mkp_fee = safe_float(cols[i_mkp_fee]) if i_mkp_fee >= 0 and i_mkp_fee < len(cols) else 0.0
         taxes   = safe_float(cols[i_taxes])   if i_taxes   >= 0 and i_taxes   < len(cols) else 0.0
         if not fecha: continue
-        # Comisiones = FINANCING_FEE + MKP_FEE (sin impuestos, igual que KNIME)
         com = fin_fee + mkp_fee
         if com:   acumular(com_mp,   fecha, com)
-        # TAXES_AMOUNT → IIBB → Impuestos (una sola vez)
         if taxes: acumular(ret_iibb, fecha, taxes)
         parsed += 1
 
@@ -1103,6 +1145,19 @@ def construir_pnl(datos):
     }
     return periodos, tabla
 
+def crear_hoja_si_no_existe(sheet_id, nombre):
+    """Crea una hoja en el spreadsheet si no existe."""
+    try:
+        svc   = get_svc()
+        meta  = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
+        hojas = [s["properties"]["title"] for s in meta.get("sheets", [])]
+        if nombre not in hojas:
+            body = {"requests": [{"addSheet": {"properties": {"title": nombre}}}]}
+            svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body=body).execute()
+            log(f"  Hoja '{nombre}' creada en Sheet")
+    except Exception as e:
+        log(f"  [WARN] no se pudo crear hoja '{nombre}': {e}")
+
 def escribir_hoja1(periodos, tabla):
     log("Escribiendo hojas por año...")
     anos = sorted(set(y for y, m in periodos))
@@ -1110,6 +1165,7 @@ def escribir_hoja1(periodos, tabla):
     for ano in anos:
         periodos_ano = [(y, m) for y, m in periodos if y == ano]
         nombre_hoja  = str(ano)
+        crear_hoja_si_no_existe(SHEET_ID_RESUMEN, nombre_hoja)
         filas = [["Row ID"] + [f"{y},{m}" for y, m in periodos_ano]]
         for cat in ["Ingresos","Costo de Mercaderia","Gastos por Ventas",
                     "Gastos de Comercializacion","Gastos de Administracion",
