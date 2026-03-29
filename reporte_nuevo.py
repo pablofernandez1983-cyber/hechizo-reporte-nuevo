@@ -11,7 +11,9 @@ from googleapiclient.discovery import build
 TZ_AR = timezone(timedelta(hours=-3))
 def ahora_ar(): return datetime.now(TZ_AR)
 
-ANO = int(os.environ.get("ANO_REPORTE", ahora_ar().year))
+ANO_DESDE = int(os.environ.get("ANO_DESDE", 2022))
+ANO_HASTA = int(os.environ.get("ANO_HASTA", ahora_ar().year))
+ANO       = ANO_HASTA  # compatibilidad
 SHEET_ID_RESUMEN    = os.environ.get("SHEET_ID_RESUMEN",    "1nUWfj9u0y7M7n2fNG6v55WnIxAedPpBxQZFUXk28nlI")
 SHEET_ID_GASTOS     = os.environ.get("SHEET_ID_GASTOS",     "1Eswje16JVngNEPTpq8f2-_2tjO8XAbsBBJnCIaqNkRY")
 SHEET_ID_GOOGLE_ADS = os.environ.get("SHEET_ID_GOOGLE_ADS", "1dNJReQ2zxMxRcs0tFTdhdPPAGaXzxqOJIRWDcY9KMPI")
@@ -538,7 +540,7 @@ def fetch_tiendanube():
         "User-Agent": "HechizoBijou-Reporte/1.0 (hechizobijou@gmail.com)"
     }
     base = f"https://api.tiendanube.com/v1/{TN_STORE_ID}"
-    fecha_30d = (ahora_ar() - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S-03:00")
+    fecha_30d = f"{ANO_DESDE}-01-01T00:00:00-03:00"  # historial completo desde ANO_DESDE
     page = 1; actualizadas = 0
     while True:
         try:
@@ -796,8 +798,8 @@ def fetch_meta():
     log(f"  Meta cache: {len(datos_dict)} dias")
 
     fecha_fin = ahora_ar().date()
-    fecha_ini = date(ANO, 1, 1) if not datos_dict else max(
-        date(ANO, 1, 1), fecha_fin - timedelta(days=60))
+    fecha_ini = date(ANO_DESDE, 1, 1) if not datos_dict else max(
+        date(ANO_DESDE, 1, 1), fecha_fin - timedelta(days=60))
 
     fecha_actual = fecha_ini
     while fecha_actual <= fecha_fin:
@@ -1034,7 +1036,7 @@ def fetch_manuales():
             if not k: continue
             v = safe_float(row[i_v]) if len(row) > i_v and row[i_v] else 0.0
             if v: tn_acum[k] += v
-    result["com_tn"] = {k: -v for k, v in tn_acum.items()}
+    result["com_tn"] = {k: -v for k, v in tn_acum.items() if k[0] >= ANO_DESDE}
     log(f"  TN abono: {len(result['com_tn'])} meses (desde Sheet)")
 
     mono_s3 = s3_leer("monotributo.json") or []
@@ -1093,7 +1095,8 @@ def combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales):
 # ═══════════════════════════════════════════════════════════════
 
 def construir_pnl(datos):
-    periodos = [(ANO, m) for m in range(1, 13)]
+    periodos = [(y, m) for y in range(ANO_DESDE, ANO_HASTA + 1) for m in range(1, 13)
+               if (y, m) <= (ahora_ar().year, ahora_ar().month)]
     tabla = {
         rid: {p: round(datos.get(rid,{}).get(p, 0.0), 2) for p in periodos}
         for rid, _, _ in PNL_FILAS
@@ -1101,30 +1104,32 @@ def construir_pnl(datos):
     return periodos, tabla
 
 def escribir_hoja1(periodos, tabla):
-    log("Escribiendo Hoja 1 Nuevo...")
-    filas = [["Row ID"] + [f"{y},{m}" for y, m in periodos]]
-
-    for cat in ["Ingresos","Costo de Mercaderia","Gastos por Ventas",
-                "Gastos de Comercializacion","Gastos de Administracion",
-                "Publicidad","Impuestos"]:
-        subtotal = [
-            round(sum(tabla.get(r,{}).get(p, 0.0) for r, _, c in PNL_FILAS if c == cat), 2)
-            for p in periodos
-        ]
-        filas.append([cat] + subtotal)
-
-    ingresos  = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c=="Ingresos") for p in periodos}
-    egresos   = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c in CATEGORIAS_EGRESO) for p in periodos}
-    resultado = {p: round(ingresos[p]+egresos[p], 2) for p in periodos}
-    filas.append(["Totales"] + [resultado[p] for p in periodos])
-
-    escribir_hoja(SHEET_ID_RESUMEN, f"'Hoja 1 Nuevo'!A1:Z{len(filas)+3}", filas)
-    log(f"  Hoja 1 Nuevo: {len(filas)} filas x {len(filas[0])} cols")
+    log("Escribiendo hojas por año...")
+    anos = sorted(set(y for y, m in periodos))
     log("  ─── Resumen P&L ───")
-    for p in periodos:
-        if ingresos[p] or egresos[p]:
-            log(f"  {ANO}/{p[1]:02d}  Ing={ingresos[p]:>14,.0f}  "
-                f"Egr={egresos[p]:>14,.0f}  Res={resultado[p]:>14,.0f}")
+    for ano in anos:
+        periodos_ano = [(y, m) for y, m in periodos if y == ano]
+        nombre_hoja  = str(ano)
+        filas = [["Row ID"] + [f"{y},{m}" for y, m in periodos_ano]]
+        for cat in ["Ingresos","Costo de Mercaderia","Gastos por Ventas",
+                    "Gastos de Comercializacion","Gastos de Administracion",
+                    "Publicidad","Impuestos"]:
+            subtotal = [
+                round(sum(tabla.get(r,{}).get(p, 0.0) for r, _, c in PNL_FILAS if c == cat), 2)
+                for p in periodos_ano
+            ]
+            filas.append([cat] + subtotal)
+        ingresos  = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c=="Ingresos") for p in periodos_ano}
+        egresos   = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c in CATEGORIAS_EGRESO) for p in periodos_ano}
+        resultado = {p: round(ingresos[p]+egresos[p], 2) for p in periodos_ano}
+        filas.append(["Totales"] + [resultado[p] for p in periodos_ano])
+        rango = f"'{nombre_hoja}'!A1:Z{len(filas)+3}"
+        escribir_hoja(SHEET_ID_RESUMEN, rango, filas)
+        log(f"  Hoja {ano}: {len(filas)} filas x {len(filas[0])} cols")
+        for p in periodos_ano:
+            if ingresos[p] or egresos[p]:
+                log(f"  {p[0]}/{p[1]:02d}  Ing={ingresos[p]:>14,.0f}  "
+                    f"Egr={egresos[p]:>14,.0f}  Res={resultado[p]:>14,.0f}")
 
 def escribir_trigger(estado, detalle):
     try:
