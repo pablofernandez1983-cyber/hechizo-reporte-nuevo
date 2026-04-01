@@ -652,30 +652,20 @@ def fetch_mercadopago():
     mp_force_refresh = os.environ.get("MP_FORCE_REFRESH","").lower() in ("1","true","yes")
     cache_mp = s3_leer("mp_settlement_cache.json")
     if cache_mp and not mp_force_refresh:
-        ts_str = cache_mp.get("timestamp","")
-        try:
-            ts = datetime.fromisoformat(ts_str)
-            edad_hs = (ahora_ar() - ts).total_seconds() / 3600
-            if edad_hs < 48:
-                log(f"  MP cache válido ({edad_hs:.1f}hs < 48hs) — saltando descarga")
-                # Claves guardadas como "2026,1" → convertir a tuplas (2026, 1)
-                def str_keys_to_tuple(d):
-                    result = {}
-                    for k, v in d.items():
-                        try:
-                            partes = k.split(",")
-                            result[(int(partes[0]), int(partes[1]))] = v
-                        except Exception:
-                            pass
-                    return result
-                return {
-                    "com_mp":   str_keys_to_tuple(cache_mp.get("com_mp", {})),
-                    "ret_iibb": str_keys_to_tuple(cache_mp.get("ret_iibb", {})),
-                }
-            else:
-                log(f"  MP cache expirado ({edad_hs:.1f}hs) — descargando de nuevo")
-        except Exception:
-            log("  MP cache: timestamp inválido — descargando de nuevo")
+        log(f"  MP cache existente — saltando descarga (usar MP_FORCE_REFRESH=true para forzar)")
+        def str_keys_to_tuple(d):
+            result = {}
+            for k, v in d.items():
+                try:
+                    partes = k.split(",")
+                    result[(int(partes[0]), int(partes[1]))] = v
+                except Exception:
+                    pass
+            return result
+        return {
+            "com_mp":   str_keys_to_tuple(cache_mp.get("com_mp", {})),
+            "ret_iibb": str_keys_to_tuple(cache_mp.get("ret_iibb", {})),
+        }
 
     headers = {"Authorization": f"Bearer {MP_TOKEN}"}
     base    = "https://api.mercadopago.com"
@@ -890,8 +880,9 @@ def fetch_meta():
     log(f"  Meta cache: {len(datos_dict)} dias")
 
     fecha_fin = ahora_ar().date()
-    fecha_ini = date(ANO_DESDE, 1, 1) if not datos_dict else max(
-        date(ANO_DESDE, 1, 1), fecha_fin - timedelta(days=60))
+    # Si hay caché, solo actualizar últimos 60 días
+    # Si no hay caché, bajar todo desde ANO_DESDE
+    fecha_ini = date(ANO_DESDE, 1, 1) if not datos_dict else (fecha_fin - timedelta(days=60))
 
     fecha_actual = fecha_ini
     while fecha_actual <= fecha_fin:
