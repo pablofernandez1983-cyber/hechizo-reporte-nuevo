@@ -540,10 +540,19 @@ def fetch_tiendanube():
         "User-Agent": "HechizoBijou-Reporte/1.0 (hechizobijou@gmail.com)"
     }
     base = f"https://api.tiendanube.com/v1/{TN_STORE_ID}"
-    # Bajar historial en ventanas de 90 días para evitar error 500 de TN
+    # Si ya hay caché histórico, solo bajar últimos 30 días
+    # Si no hay caché, bajar todo desde ANO_DESDE en ventanas de 90 días
     from datetime import date as _date
-    cursor     = _date(ANO_DESDE, 1, 1)
-    hoy_date   = ahora_ar().date()
+    hoy_date = ahora_ar().date()
+    if len(cache) > 0:
+        # Modo actualizar: solo últimos 30 días
+        cursor_inicio = hoy_date - timedelta(days=30)
+        log(f"  TN modo actualizar: últimos 30 días desde {cursor_inicio}")
+    else:
+        # Modo histórico: desde ANO_DESDE
+        cursor_inicio = _date(ANO_DESDE, 1, 1)
+        log(f"  TN modo histórico: desde {cursor_inicio}")
+    cursor     = cursor_inicio
     actualizadas = 0
     while cursor <= hoy_date:
         hasta   = min(cursor + timedelta(days=89), hoy_date)
@@ -726,23 +735,59 @@ def fetch_mercadopago():
         bloques_mp.append((cursor_mp.strftime("%Y-%m-%d"), hasta_mp.strftime("%Y-%m-%d")))
         cursor_mp = hasta_mp + timedelta(days=1)
 
-    log(f"  MP: {len(bloques_mp)} bloques a descargar desde {ANO_DESDE}")
+    # Si ya hay caché completo (no parcial), solo bajar últimos 30 días
+    # Si no hay caché, bajar todo desde ANO_DESDE en bloques de 90 días
+    cache_parcial = s3_leer("mp_settlement_parcial.json") or {}
+    cache_completo = s3_leer("mp_settlement_lines.json") or {}
 
-    # Acumular todas las líneas de todos los bloques
-    todas_las_lines = []
-    header_ref = None
-    for i, (desde, hasta) in enumerate(bloques_mp, 1):
-        log(f"  MP bloque {i}/{len(bloques_mp)}: {desde} → {hasta}")
-        content = _mp_descargar_bloque(desde, hasta)
-        if not content:
-            continue
-        lines_bloque = content.splitlines()
-        if not lines_bloque: continue
-        if header_ref is None:
-            header_ref = lines_bloque[0]
-            todas_las_lines.extend(lines_bloque)
-        else:
-            todas_las_lines.extend(lines_bloque[1:])  # skip header en bloques siguientes
+    if cache_completo.get("lines") and not cache_parcial.get("bloques_ok"):
+        # Modo actualizar: solo últimos 30 días
+        hoy_mp_d = ahora_ar().date()
+        desde_30 = (hoy_mp_d - timedelta(days=30)).strftime("%Y-%m-%d")
+        hasta_30 = hoy_mp_d.strftime("%Y-%m-%d")
+        log(f"  MP modo actualizar: últimos 30 días")
+        content_nuevo = _mp_descargar_bloque(desde_30, hasta_30)
+        todas_las_lines = cache_completo["lines"]
+        if content_nuevo:
+            lines_nuevas = content_nuevo.splitlines()
+            if lines_nuevas:
+                todas_las_lines.extend(lines_nuevas[1:])  # skip header
+        s3_guardar("mp_settlement_lines.json", {"lines": todas_las_lines})
+    else:
+        # Modo histórico: bloques de 90 días desde ANO_DESDE
+        log(f"  MP: {len(bloques_mp)} bloques a descargar desde {ANO_DESDE}")
+        bloques_ok    = set(cache_parcial.get("bloques_ok", []))
+        todas_las_lines = cache_parcial.get("lines", [])
+        header_ref = todas_las_lines[0] if todas_las_lines else None
+        if bloques_ok:
+            log(f"  MP caché parcial: {len(bloques_ok)} bloques ya descargados")
+
+        for i, (desde, hasta) in enumerate(bloques_mp, 1):
+            clave = f"{desde}_{hasta}"
+            if clave in bloques_ok:
+                log(f"  MP bloque {i}/{len(bloques_mp)}: {desde} ya en caché — skip")
+                continue
+            log(f"  MP bloque {i}/{len(bloques_mp)}: {desde} → {hasta}")
+            content = _mp_descargar_bloque(desde, hasta)
+            if not content:
+                continue
+            lines_bloque = content.splitlines()
+            if not lines_bloque: continue
+            if header_ref is None:
+                header_ref = lines_bloque[0]
+                todas_las_lines.extend(lines_bloque)
+            else:
+                todas_las_lines.extend(lines_bloque[1:])
+            bloques_ok.add(clave)
+            s3_guardar("mp_settlement_parcial.json", {
+                "bloques_ok": list(bloques_ok),
+                "lines": todas_las_lines
+            })
+
+        # Guardar caché completo y limpiar parcial
+        s3_guardar("mp_settlement_lines.json", {"lines": todas_las_lines})
+        s3_guardar("mp_settlement_parcial.json", {})
+        log("  MP histórico completo guardado en S3")
 
     if not todas_las_lines:
         log("  [WARN] MP settlement vacío"); return {}
@@ -786,6 +831,9 @@ def fetch_mercadopago():
         parsed += 1
 
     log(f"  MP settlement OK — {parsed} filas, com_mp={len(com_mp)} meses")
+    # Limpiar caché parcial — descarga completada exitosamente
+    s3_guardar("mp_settlement_parcial.json", {})
+    log("  MP caché parcial limpiado")
 
     # Guardar cache con timestamp para skip de 48hs en próximas corridas
     def dict_to_str_keys(d):
@@ -835,7 +883,9 @@ def fetch_meta():
     if not META_TOKEN or not META_ACCOUNT:
         log("  [SKIP] sin credenciales Meta"); return {}
 
-    cache_list = s3_leer("meta_gastos.json") or []
+    meta_force = os.environ.get("META_FORCE_REFRESH","").lower() in ("1","true","yes")
+    cache_list = [] if meta_force else (s3_leer("meta_gastos.json") or [])
+    if meta_force: log("  Meta: forzando recarga completa")
     datos_dict = {d["date_start"]: d for d in cache_list}
     log(f"  Meta cache: {len(datos_dict)} dias")
 
