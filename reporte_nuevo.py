@@ -678,10 +678,39 @@ def fetch_mercadopago():
     headers = {"Authorization": f"Bearer {MP_TOKEN}"}
     base    = "https://api.mercadopago.com"
 
-    if os.environ.get("MP_FORCE_REFRESH", "").lower() == "true":
+    force_refresh = os.environ.get("MP_FORCE_REFRESH", "").lower() == "true"
+
+    if force_refresh:
         s3_borrar("mp_settlement_parcial.json")
         s3_borrar("mp_settlement_lines.json")
-        log("  MP cachés limpiados manualmente")
+        s3_borrar("mp_settlement_cache.json")
+        log("  MP cachés limpiados manualmente (FORCE_REFRESH)")
+    else:
+        # ── Chequeo de 48hs: si ya se bajó hace poco, saltear ─────
+        cache_rapido = s3_leer("mp_settlement_cache.json")
+        if cache_rapido and cache_rapido.get("timestamp"):
+            try:
+                ts = datetime.fromisoformat(cache_rapido["timestamp"])
+                edad_hs = (ahora_ar() - ts).total_seconds() / 3600
+                if edad_hs < 48:
+                    log(f"  MP cache válido ({edad_hs:.1f}hs < 48hs) — saltando descarga")
+                    def str_to_tuple_keys(d):
+                        result = {}
+                        for k, v in d.items():
+                            try:
+                                a, m = k.split(",")
+                                result[(int(a), int(m))] = v
+                            except:
+                                pass
+                        return result
+                    return {
+                        "com_mp":   str_to_tuple_keys(cache_rapido.get("com_mp",   {})),
+                        "ret_iibb": str_to_tuple_keys(cache_rapido.get("ret_iibb", {})),
+                    }
+                else:
+                    log(f"  MP cache expirado ({edad_hs:.1f}hs ≥ 48hs) — descargando")
+            except Exception as e:
+                log(f"  MP cache timestamp inválido: {e} — descargando")
 
     def _mp_descargar_bloque(desde_str, hasta_str, headers, base):
         """
