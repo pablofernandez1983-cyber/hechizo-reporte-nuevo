@@ -666,6 +666,10 @@ def fetch_mercadopago():
 
     # ── Cache de 48hs — igual que el script original de KNIME ──
     mp_force_refresh = os.environ.get("MP_FORCE_REFRESH","").lower() in ("1","true","yes")
+    # Limpiar caché parcial si se pide explícitamente
+    if os.environ.get("MP_CLEAR_PARTIAL","").lower() in ("1","true","yes"):
+        s3_guardar("mp_settlement_parcial.json", {})
+        log("  MP caché parcial limpiado manualmente")
     # Solo usar caché procesado si NO hay descarga histórica en curso (parcial)
     cache_parcial_check = s3_leer("mp_settlement_parcial.json") or {}
     cache_mp = s3_leer("mp_settlement_cache.json")
@@ -706,7 +710,7 @@ def fetch_mercadopago():
             log(f"  [ERROR] MP create {desde_str}: {e}"); return None
 
         filename = None
-        for intento in range(1, 21):
+        for intento in range(1, 31):
             time.sleep(30)
             try:
                 reportes = requests.get(f"{base}/v1/account/settlement_report/list",
