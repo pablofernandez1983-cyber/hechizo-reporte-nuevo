@@ -62,7 +62,7 @@ GADS_MULTIPLICADOR = {
     (2026,5):1.0,(2026,6):1.0,(2026,7):1.0,(2026,8):1.0,
     (2026,9):1.0,(2026,10):1.0,(2026,11):1.0,(2026,12):1.0,
 }
-GADS_MULTIPLICADOR_DEFAULT = 1.545
+GADS_MULTIPLICADOR_DEFAULT = 1.0
 
 PNL_FILAS = [
     ("ventas_min",     "Ventas",                    "Ingresos"),
@@ -666,8 +666,11 @@ def fetch_mercadopago():
 
     # ── Cache de 48hs — igual que el script original de KNIME ──
     mp_force_refresh = os.environ.get("MP_FORCE_REFRESH","").lower() in ("1","true","yes")
+    # Solo usar caché procesado si NO hay descarga histórica en curso (parcial)
+    cache_parcial_check = s3_leer("mp_settlement_parcial.json") or {}
     cache_mp = s3_leer("mp_settlement_cache.json")
-    if cache_mp and not mp_force_refresh:
+    hay_parcial = bool(cache_parcial_check.get("bloques_ok"))
+    if cache_mp and not mp_force_refresh and not hay_parcial:
         log(f"  MP cache existente — saltando descarga (usar MP_FORCE_REFRESH=true para forzar)")
         def str_keys_to_tuple(d):
             result = {}
@@ -682,6 +685,8 @@ def fetch_mercadopago():
             "com_mp":   str_keys_to_tuple(cache_mp.get("com_mp", {})),
             "ret_iibb": str_keys_to_tuple(cache_mp.get("ret_iibb", {})),
         }
+    if hay_parcial:
+        log(f"  MP descarga histórica incompleta detectada — reanudando")
 
     headers = {"Authorization": f"Bearer {MP_TOKEN}"}
     base    = "https://api.mercadopago.com"
