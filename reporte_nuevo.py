@@ -1395,6 +1395,34 @@ def main():
     if not SA_JSON:
         raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON no configurada")
 
+    # MP_REWRITE_DB=true → solo releer S3 y reescribir mp_settlement en Supabase
+    # sin bajar nada de la API de MP ni tocar otras fuentes
+    if os.environ.get("MP_REWRITE_DB", "").lower() == "true":
+        log("Modo MP_REWRITE_DB: reescribiendo mp_settlement desde S3...")
+        if not DATABASE_URL:
+            log("[ERROR] DATABASE_URL no configurada"); return
+        cache = s3_leer("mp_settlement_lines.json") or {}
+        lines = cache.get("lines", [])
+        if not lines:
+            log("[ERROR] mp_settlement_lines.json vacío o inexistente"); return
+        sep = ";" if lines[0].count(";") >= lines[0].count(",") else ","
+        header = [c.strip().strip('"').upper() for c in lines[0].split(sep)]
+        idx_map = {col: i for i, col in enumerate(header)}
+        i_date    = idx_map.get("SETTLEMENT_DATE") or idx_map.get("TRANSACTION_DATE") or 0
+        i_fee     = idx_map.get("FEE_AMOUNT", -1)
+        i_fin_fee = idx_map.get("FINANCING_FEE_AMOUNT", -1)
+        i_mkp_fee = idx_map.get("MKP_FEE_AMOUNT", -1)
+        i_taxes   = idx_map.get("TAXES_AMOUNT", -1)
+        i_net     = idx_map.get("SETTLEMENT_NET_AMOUNT", -1)
+        i_type    = idx_map.get("TRANSACTION_TYPE", -1)
+        log(f"  {len(lines)} líneas, sep='{sep}'")
+        # Truncar y reescribir limpio
+        db_exec("TRUNCATE TABLE mp_settlement")
+        log("  mp_settlement truncada")
+        guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type)
+        log("Modo MP_REWRITE_DB completado.")
+        return
+
     try:
         tn, tn_orders = fetch_tiendanube()
         mp       = fetch_mercadopago()
