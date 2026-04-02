@@ -807,11 +807,42 @@ def fetch_mercadopago():
         desde_30 = (hoy_mp - timedelta(days=30)).strftime("%Y-%m-%d")
         hasta_30 = hoy_mp.strftime("%Y-%m-%d")
         content_nuevo = _mp_descargar_bloque(desde_30, hasta_30, headers, base)
-        todas_las_lines = cache_completo["lines"]
+        lines_historico = cache_completo["lines"]
+
         if content_nuevo:
             lines_nuevas = content_nuevo.splitlines()
             if lines_nuevas:
-                todas_las_lines.extend(lines_nuevas[1:])
+                # Agregar primero, deduplicar después por SOURCE_ID (col 1)
+                # Las líneas nuevas van al final → en la deduplicación ganan las nuevas
+                sep_det = ";" if lines_historico[0].count(";") >= lines_historico[0].count(",") else ","
+                todas_combinadas = lines_historico + lines_nuevas[1:]  # skip header duplicado
+
+                # Deduplicar: recorrer de atrás para adelante, quedarse con la primera
+                # aparición de cada SOURCE_ID (que es la más reciente porque agregamos al final)
+                visto = set()
+                lines_dedup = []
+                for line in reversed(todas_combinadas[1:]):  # skip header
+                    if not line.strip():
+                        continue
+                    cols = line.split(sep_det)
+                    source_id = cols[1].strip().strip('"') if len(cols) > 1 else ""
+                    if source_id and source_id in visto:
+                        continue  # duplicado, lo ignoramos (ya tenemos la versión más nueva)
+                    if source_id:
+                        visto.add(source_id)
+                    lines_dedup.append(line)
+
+                # Revertir para mantener orden cronológico
+                lines_dedup.reverse()
+                todas_las_lines = [todas_combinadas[0]] + lines_dedup  # header + deduplicadas
+                duplicados = len(todas_combinadas) - 1 - len(lines_dedup)
+                log(f"  MP actualizar: {len(lines_nuevas)-1} líneas nuevas agregadas, {duplicados} duplicados eliminados")
+                log(f"  MP actualizar: total {len(todas_las_lines)} líneas en caché")
+            else:
+                todas_las_lines = lines_historico
+        else:
+            todas_las_lines = lines_historico
+
         s3_guardar("mp_settlement_lines.json", {"lines": todas_las_lines})
     else:
         log(f"  MP: {len(bloques_mp)} bloques a descargar desde {ANO_DESDE}")
