@@ -678,14 +678,15 @@ def fetch_mercadopago():
     headers = {"Authorization": f"Bearer {MP_TOKEN}"}
     base    = "https://api.mercadopago.com"
 
-    force_refresh = os.environ.get("MP_FORCE_REFRESH", "").lower() == "true"
+    force_refresh  = os.environ.get("MP_FORCE_REFRESH", "").lower() == "true"
+    cache_48hs_on  = os.environ.get("MP_CACHE_48HS", "true").lower() != "false"
 
     if force_refresh:
         s3_borrar("mp_settlement_parcial.json")
         s3_borrar("mp_settlement_lines.json")
         s3_borrar("mp_settlement_cache.json")
         log("  MP cachés limpiados manualmente (FORCE_REFRESH)")
-    else:
+    elif cache_48hs_on:
         # ── Chequeo de 48hs: si ya se bajó hace poco, saltear ─────
         cache_rapido = s3_leer("mp_settlement_cache.json")
         if cache_rapido and cache_rapido.get("timestamp"):
@@ -711,6 +712,8 @@ def fetch_mercadopago():
                     log(f"  MP cache expirado ({edad_hs:.1f}hs ≥ 48hs) — descargando")
             except Exception as e:
                 log(f"  MP cache timestamp inválido: {e} — descargando")
+    else:
+        log("  MP cache 48hs desactivado (MP_CACHE_48HS=false) — descargando")
 
     def _mp_descargar_bloque(desde_str, hasta_str, headers, base):
         """
