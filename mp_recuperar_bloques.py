@@ -111,11 +111,26 @@ def mp_descargar_si_existe(desde_str, lista_mp, headers, base):
     Solo descarga si ya existe un reporte processed en la lista de MP.
     No crea nada nuevo.
     """
+    # MP a veces genera el begin_date 1-2 días antes del pedido
+    # por eso buscamos por proximidad en lugar de exacto
+    try:
+        desde_dt = date.fromisoformat(desde_str)
+    except:
+        desde_dt = None
+
+    def _begin_cerca(rep):
+        bd = rep.get("begin_date", "")[:10]
+        try:
+            bd_dt = date.fromisoformat(bd)
+            return abs((bd_dt - desde_dt).days) <= 2
+        except:
+            return False
+
     existente = next((
         rep for rep in lista_mp
         if rep.get("status") == "processed"
         and rep.get("file_name")
-        and rep.get("begin_date", "").startswith(desde_str)
+        and (desde_dt and _begin_cerca(rep))
     ), None)
 
     if not existente:
