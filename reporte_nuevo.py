@@ -505,6 +505,16 @@ def s3_guardar(key, data):
         log(f"  [WARN] S3 guardar {key}: {e}")
         return False
 
+def s3_borrar(key):
+    s3 = get_s3()
+    if not s3: return False
+    try:
+        s3.delete_object(Bucket=S3_BUCKET, Key=key)
+        return True
+    except Exception as e:
+        log(f"  [WARN] S3 borrar {key}: {e}")
+        return False
+
 # ═══════════════════════════════════════════════════════════════
 # GOOGLE SHEETS
 # ═══════════════════════════════════════════════════════════════
@@ -662,87 +672,99 @@ def fetch_tiendanube():
 def fetch_mercadopago():
     log("MercadoPago: descargando settlement...")
     if not MP_TOKEN or not MP_USER_ID:
-        log("  [SKIP] sin credenciales MP"); return {}
-
-    # ── Cache de 48hs — igual que el script original de KNIME ──
-    mp_force_refresh = os.environ.get("MP_FORCE_REFRESH","").lower() in ("1","true","yes")
-    # Limpiar cachés si se pide explícitamente
-    if os.environ.get("MP_CLEAR_PARTIAL","").lower() in ("1","true","yes"):
-        s3_guardar("mp_settlement_parcial.json", {})
-        s3_guardar("mp_settlement_lines.json", {})
-        log("  MP cachés limpiados manualmente")
-    # Solo usar caché procesado si NO hay descarga histórica en curso (parcial)
-    cache_parcial_check = s3_leer("mp_settlement_parcial.json") or {}
-    cache_mp = s3_leer("mp_settlement_cache.json")
-    hay_parcial = bool(cache_parcial_check.get("bloques_ok"))
-    if cache_mp and not mp_force_refresh and not hay_parcial:
-        log(f"  MP cache existente — saltando descarga (usar MP_FORCE_REFRESH=true para forzar)")
-        def str_keys_to_tuple(d):
-            result = {}
-            for k, v in d.items():
-                try:
-                    partes = k.split(",")
-                    result[(int(partes[0]), int(partes[1]))] = v
-                except Exception:
-                    pass
-            return result
-        return {
-            "com_mp":   str_keys_to_tuple(cache_mp.get("com_mp", {})),
-            "ret_iibb": str_keys_to_tuple(cache_mp.get("ret_iibb", {})),
-        }
-    if hay_parcial:
-        log(f"  MP descarga histórica incompleta detectada — reanudando")
+        log("  [SKIP] sin credenciales MP")
+        return {}
 
     headers = {"Authorization": f"Bearer {MP_TOKEN}"}
     base    = "https://api.mercadopago.com"
 
-    def _mp_descargar_bloque(desde_str, hasta_str):
-        """Descarga un bloque de MP settlement y devuelve el texto CSV."""
+    if os.environ.get("MP_FORCE_REFRESH", "").lower() == "true":
+        s3_borrar("mp_settlement_parcial.json")
+        s3_borrar("mp_settlement_lines.json")
+        log("  MP cachés limpiados manualmente")
+
+    def _mp_descargar_bloque(desde_str, hasta_str, headers, base):
+        """
+        1. Busca en la lista de MP si ya existe un reporte processed para este rango.
+        2. Si existe -> descarga directo.
+        3. Si no -> crea uno nuevo y espera hasta 40 intentos (20 min).
+        """
+
         try:
-            r = requests.post(f"{base}/v1/account/settlement_report",
-                              headers=headers,
-                              json={"begin_date": f"{desde_str}T00:00:00Z",
-                                    "end_date":   f"{hasta_str}T23:59:59Z"})
+            lista = requests.get(
+                f"{base}/v1/account/settlement_report/list",
+                headers=headers, timeout=30
+            ).json()
+
+            existente = next((
+                rep for rep in lista
+                if rep.get("status") == "processed"
+                and rep.get("file_name")
+                and rep.get("begin_date", "").startswith(desde_str)
+            ), None)
+
+            if existente:
+                log(f"  MP bloque {desde_str}: reporte existente encontrado (ID {existente.get('id')}) -> descargando directo")
+                content = requests.get(
+                    f"{base}/v1/account/settlement_report/{existente['file_name']}",
+                    headers=headers, timeout=60
+                ).text
+                log(f"  MP bloque {desde_str}: {len(content.splitlines())} líneas (reusado)")
+                return content
+        except Exception as e:
+            log(f"  [WARN] MP check existente {desde_str}: {e}")
+
+        report_id = None
+        try:
+            r = requests.post(
+                f"{base}/v1/account/settlement_report",
+                headers=headers,
+                json={"begin_date": f"{desde_str}T00:00:00Z",
+                      "end_date":   f"{hasta_str}T23:59:59Z"}
+            )
             if r.status_code not in (200, 202):
-                log(f"  [WARN] MP create {desde_str}: {r.status_code}"); return None
+                log(f"  [WARN] MP create {desde_str}: {r.status_code} {r.text[:200]}")
+                return None
             report_id = r.json().get("id")
             log(f"  MP bloque {desde_str} → {hasta_str}: ID {report_id}")
         except Exception as e:
-            log(f"  [ERROR] MP create {desde_str}: {e}"); return None
+            log(f"  [ERROR] MP create {desde_str}: {e}")
+            return None
 
-        filename = None
         for intento in range(1, 41):
             time.sleep(30)
             try:
-                reportes = requests.get(f"{base}/v1/account/settlement_report/list",
-                                        headers=headers, timeout=30).json()
-                nuestro = next((rep for rep in reportes if rep.get("id") == report_id), None)
+                lista = requests.get(
+                    f"{base}/v1/account/settlement_report/list",
+                    headers=headers, timeout=30
+                ).json()
+                nuestro = next((r for r in lista if r.get("id") == report_id), None)
                 if nuestro:
-                    status    = nuestro.get("status","")
-                    file_name = nuestro.get("file_name","")
-                    log(f"  MP intento {intento}/20: {status}")
+                    status    = nuestro.get("status", "")
+                    file_name = nuestro.get("file_name", "")
+                    log(f"  MP intento {intento}/40: {status}")
                     if file_name and status == "processed":
-                        filename = file_name; break
+                        content = requests.get(
+                            f"{base}/v1/account/settlement_report/{file_name}",
+                            headers=headers, timeout=60
+                        ).text
+                        log(f"  MP bloque {desde_str}: {len(content.splitlines())} líneas")
+                        return content
                     elif status == "error":
-                        log("  [ERROR] MP reporte falló"); return None
+                        log(f"  [ERROR] MP reporte {desde_str} falló en generación")
+                        return None
                 else:
-                    log(f"  MP intento {intento}/40: esperando...")
+                    log(f"  MP intento {intento}/40: esperando ID {report_id}...")
             except Exception as e:
-                log(f"  [WARN] MP polling: {e}")
+                log(f"  [WARN] MP polling {desde_str}: {e}")
 
-        if not filename:
-            log(f"  [WARN] MP bloque {desde_str} no disponible"); return None
+        log(f"  [WARN] MP bloque {desde_str} timeout tras 40 intentos - quedó en lista para próxima corrida")
+        return None
 
-        try:
-            content = requests.get(f"{base}/v1/account/settlement_report/{filename}",
-                                   headers=headers, timeout=60).text
-            log(f"  MP bloque {desde_str}: {len(content.splitlines())} líneas")
-            return content
-        except Exception as e:
-            log(f"  [ERROR] MP download {desde_str}: {e}"); return None
-
-    # Dividir en bloques de 90 días desde ANO_DESDE hasta hoy
     from datetime import date as _date
+    cache_completo = s3_leer("mp_settlement_lines.json") or {}
+    cache_parcial  = s3_leer("mp_settlement_parcial.json") or {}
+
     cursor_mp  = _date(ANO_DESDE, 1, 1)
     hoy_mp     = ahora_ar().date()
     bloques_mp = []
@@ -751,32 +773,26 @@ def fetch_mercadopago():
         bloques_mp.append((cursor_mp.strftime("%Y-%m-%d"), hasta_mp.strftime("%Y-%m-%d")))
         cursor_mp = hasta_mp + timedelta(days=1)
 
-    # Si ya hay caché completo (no parcial), solo bajar últimos 30 días
-    # Si no hay caché, bajar todo desde ANO_DESDE en bloques de 90 días
-    cache_parcial = s3_leer("mp_settlement_parcial.json") or {}
-    cache_completo = s3_leer("mp_settlement_lines.json") or {}
-
     if cache_completo.get("lines") and not cache_parcial.get("bloques_ok"):
-        # Modo actualizar: solo últimos 30 días
-        hoy_mp_d = ahora_ar().date()
-        desde_30 = (hoy_mp_d - timedelta(days=30)).strftime("%Y-%m-%d")
-        hasta_30 = hoy_mp_d.strftime("%Y-%m-%d")
-        log(f"  MP modo actualizar: últimos 30 días")
-        content_nuevo = _mp_descargar_bloque(desde_30, hasta_30)
+        log("  MP modo actualizar: últimos 30 días")
+        desde_30 = (hoy_mp - timedelta(days=30)).strftime("%Y-%m-%d")
+        hasta_30 = hoy_mp.strftime("%Y-%m-%d")
+        content_nuevo = _mp_descargar_bloque(desde_30, hasta_30, headers, base)
         todas_las_lines = cache_completo["lines"]
         if content_nuevo:
             lines_nuevas = content_nuevo.splitlines()
             if lines_nuevas:
-                todas_las_lines.extend(lines_nuevas[1:])  # skip header
+                todas_las_lines.extend(lines_nuevas[1:])
         s3_guardar("mp_settlement_lines.json", {"lines": todas_las_lines})
     else:
-        # Modo histórico: bloques de 90 días desde ANO_DESDE
         log(f"  MP: {len(bloques_mp)} bloques a descargar desde {ANO_DESDE}")
-        bloques_ok    = set(cache_parcial.get("bloques_ok", []))
+        bloques_ok      = set(cache_parcial.get("bloques_ok", []))
         todas_las_lines = cache_parcial.get("lines", [])
-        header_ref = todas_las_lines[0] if todas_las_lines else None
+        header_ref      = todas_las_lines[0] if todas_las_lines else None
         if bloques_ok:
             log(f"  MP caché parcial: {len(bloques_ok)} bloques ya descargados")
+
+        bloques_fallidos = []
 
         for i, (desde, hasta) in enumerate(bloques_mp, 1):
             clave = f"{desde}_{hasta}"
@@ -784,11 +800,14 @@ def fetch_mercadopago():
                 log(f"  MP bloque {i}/{len(bloques_mp)}: {desde} ya en caché — skip")
                 continue
             log(f"  MP bloque {i}/{len(bloques_mp)}: {desde} → {hasta}")
-            content = _mp_descargar_bloque(desde, hasta)
+            content = _mp_descargar_bloque(desde, hasta, headers, base)
             if not content:
+                bloques_fallidos.append((desde, hasta))
                 continue
             lines_bloque = content.splitlines()
-            if not lines_bloque: continue
+            if not lines_bloque:
+                bloques_fallidos.append((desde, hasta))
+                continue
             if header_ref is None:
                 header_ref = lines_bloque[0]
                 todas_las_lines.extend(lines_bloque)
@@ -800,10 +819,37 @@ def fetch_mercadopago():
                 "lines": todas_las_lines
             })
 
-        # Guardar caché completo y limpiar parcial
-        s3_guardar("mp_settlement_lines.json", {"lines": todas_las_lines})
-        s3_guardar("mp_settlement_parcial.json", {})
-        log("  MP histórico completo guardado en S3")
+        if bloques_fallidos:
+            log(f"  MP: {len(bloques_fallidos)} bloques fallidos → reintentando")
+            for desde, hasta in bloques_fallidos:
+                clave = f"{desde}_{hasta}"
+                log(f"  MP reintento: {desde} → {hasta}")
+                content = _mp_descargar_bloque(desde, hasta, headers, base)
+                if not content:
+                    log(f"  [WARN] MP bloque {desde} falló en reintento — se omite")
+                    continue
+                lines_bloque = content.splitlines()
+                if not lines_bloque:
+                    continue
+                if header_ref is None:
+                    header_ref = lines_bloque[0]
+                    todas_las_lines.extend(lines_bloque)
+                else:
+                    todas_las_lines.extend(lines_bloque[1:])
+                bloques_ok.add(clave)
+                s3_guardar("mp_settlement_parcial.json", {
+                    "bloques_ok": list(bloques_ok),
+                    "lines": todas_las_lines
+                })
+
+        total_bloques = len(bloques_mp)
+        if len(bloques_ok) >= total_bloques:
+            log("  MP histórico completo → guardando caché definitivo")
+            s3_guardar("mp_settlement_lines.json", {"lines": todas_las_lines})
+            s3_borrar("mp_settlement_parcial.json")
+        else:
+            faltantes = total_bloques - len(bloques_ok)
+            log(f"  MP: {faltantes} bloques aún pendientes — caché parcial actualizado para próxima corrida")
 
     if not todas_las_lines:
         log("  [WARN] MP settlement vacío"); return {}
