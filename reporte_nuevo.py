@@ -305,7 +305,7 @@ def guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_tax
              transaction_amount, fee_amount, financing_fee_amount, mkp_fee_amount,
              taxes_amount, settlement_net_amount, payment_method)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (source_id) DO UPDATE SET
+        ON CONFLICT (source_id, transaction_type) DO UPDATE SET
             fee_amount=EXCLUDED.fee_amount,
             financing_fee_amount=EXCLUDED.financing_fee_amount,
             mkp_fee_amount=EXCLUDED.mkp_fee_amount,
@@ -815,24 +815,36 @@ def fetch_mercadopago():
         if content_nuevo:
             lines_nuevas = content_nuevo.splitlines()
             if lines_nuevas:
-                # Agregar primero, deduplicar después por SOURCE_ID (col 1)
+                # Agregar primero, deduplicar después por SOURCE_ID + TRANSACTION_TYPE
+                # Así un SETTLEMENT y su REFUND del mismo source_id coexisten
                 # Las líneas nuevas van al final → en la deduplicación ganan las nuevas
                 sep_det = ";" if lines_historico[0].count(";") >= lines_historico[0].count(",") else ","
                 todas_combinadas = lines_historico + lines_nuevas[1:]  # skip header duplicado
 
+                # Detectar columna de transaction_type en el header
+                try:
+                    hdr = [c.strip().strip('"').upper() for c in todas_combinadas[0].split(sep_det)]
+                    i_src  = next((i for i, c in enumerate(hdr) if c == "SOURCE_ID"), 1)
+                    i_type = next((i for i, c in enumerate(hdr) if c == "TRANSACTION_TYPE"), -1)
+                except:
+                    i_src  = 1
+                    i_type = -1
+
                 # Deduplicar: recorrer de atrás para adelante, quedarse con la primera
-                # aparición de cada SOURCE_ID (que es la más reciente porque agregamos al final)
+                # aparición de cada SOURCE_ID + TRANSACTION_TYPE
                 visto = set()
                 lines_dedup = []
                 for line in reversed(todas_combinadas[1:]):  # skip header
                     if not line.strip():
                         continue
                     cols = line.split(sep_det)
-                    source_id = cols[1].strip().strip('"') if len(cols) > 1 else ""
-                    if source_id and source_id in visto:
-                        continue  # duplicado, lo ignoramos (ya tenemos la versión más nueva)
+                    source_id  = cols[i_src].strip().strip('"')  if len(cols) > i_src  else ""
+                    tx_type    = cols[i_type].strip().strip('"') if i_type >= 0 and len(cols) > i_type else ""
+                    clave_unica = f"{source_id}|{tx_type}"
+                    if source_id and clave_unica in visto:
+                        continue  # duplicado real, ignorar
                     if source_id:
-                        visto.add(source_id)
+                        visto.add(clave_unica)
                     lines_dedup.append(line)
 
                 # Revertir para mantener orden cronológico
