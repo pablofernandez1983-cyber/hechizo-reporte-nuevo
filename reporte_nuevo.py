@@ -1376,6 +1376,66 @@ def escribir_hoja1(periodos, tabla):
                 log(f"  {p[0]}/{p[1]:02d}  Ing={ingresos[p]:>14,.0f}  "
                     f"Egr={egresos[p]:>14,.0f}  Res={resultado[p]:>14,.0f}")
 
+    escribir_hoja_detalle(periodos, tabla)
+
+def escribir_hoja_detalle(periodos, tabla):
+    """Escribe solapas detalladas '2026 detalle', '2025 detalle', etc.
+    Muestra cada rubro individual con subtotales por categoría."""
+    log("  ─── Detalle P&L ───")
+    anos = sorted(set(y for y, m in periodos))
+
+    for ano in anos:
+        periodos_ano = [(y, m) for y, m in periodos if y == ano]
+        nombre_hoja  = f"{ano} detalle"
+        crear_hoja_si_no_existe(SHEET_ID_RESUMEN, nombre_hoja)
+
+        # Header
+        filas = [["Categoría", "Descripción"] + [f"{y},{m}" for y, m in periodos_ano]]
+
+        cats_orden = [
+            "Ingresos",
+            "Costo de Mercaderia",
+            "Gastos por Ventas",
+            "Gastos de Comercializacion",
+            "Gastos de Administracion",
+            "Publicidad",
+            "Impuestos",
+        ]
+
+        for cat in cats_orden:
+            # Rubros de esta categoría
+            rubros_cat = [(rid, desc) for rid, desc, c in PNL_FILAS if c == cat]
+            filas_con_datos = []
+            for rid, desc in rubros_cat:
+                valores = [round(tabla.get(rid, {}).get(p, 0.0), 2) for p in periodos_ano]
+                if any(v != 0 for v in valores):
+                    filas_con_datos.append([cat, desc] + valores)
+
+            if not filas_con_datos:
+                continue
+
+            # Filas de detalle
+            filas.extend(filas_con_datos)
+
+            # Subtotal de categoría
+            subtotal = [
+                round(sum(tabla.get(r, {}).get(p, 0.0) for r, _, c in PNL_FILAS if c == cat), 2)
+                for p in periodos_ano
+            ]
+            filas.append([f"SUBTOTAL {cat}", ""] + subtotal)
+            filas.append(["", ""])  # línea en blanco entre categorías
+
+        # Total final
+        ingresos = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c=="Ingresos") for p in periodos_ano}
+        egresos  = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c in CATEGORIAS_EGRESO) for p in periodos_ano}
+        resultado = {p: round(ingresos[p]+egresos[p], 2) for p in periodos_ano}
+        filas.append(["RESULTADO NETO", ""] + [resultado[p] for p in periodos_ano])
+
+        rango = f"'{nombre_hoja}'!A1:Z{len(filas)+3}"
+        escribir_hoja(SHEET_ID_RESUMEN, rango, filas)
+        log(f"  Hoja '{nombre_hoja}': {len(filas)} filas")
+
+
 def escribir_trigger(estado, detalle):
     try:
         escribir_hoja(SHEET_ID_RESUMEN, "Trigger!A1:A2", [[estado], [detalle]])
