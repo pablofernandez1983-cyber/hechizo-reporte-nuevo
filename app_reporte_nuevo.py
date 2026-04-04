@@ -3,7 +3,8 @@ app_reporte_nuevo.py — Flask wrapper para Railway
 Expone reporte_nuevo.py como endpoint HTTP.
 """
 
-import os, threading
+import os, sys, threading, io
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -22,11 +23,34 @@ _estado = {
     "error": None,
 }
 
+_log_buffer = deque(maxlen=200)  # últimas 200 líneas
+
+
+class _LogCapture(io.TextIOBase):
+    """Stream que escribe en stdout Y en el buffer de logs."""
+    def __init__(self, original):
+        self._original = original
+
+    def write(self, text):
+        self._original.write(text)
+        self._original.flush()
+        line = text.rstrip("\n")
+        if line:
+            _log_buffer.append(line)
+        return len(text)
+
+    def flush(self):
+        self._original.flush()
+
 
 def _run():
     _estado["corriendo"] = True
     _estado["ultimo_inicio"] = datetime.now(TZ_AR).isoformat()
     _estado["error"] = None
+    _log_buffer.clear()
+
+    original_stdout = sys.stdout
+    sys.stdout = _LogCapture(original_stdout)
     try:
         ejecutar_reporte()
         _estado["resultado"] = "OK"
@@ -34,6 +58,7 @@ def _run():
         _estado["resultado"] = "ERROR"
         _estado["error"] = str(e)
     finally:
+        sys.stdout = original_stdout
         _estado["corriendo"] = False
         _estado["ultimo_fin"] = datetime.now(TZ_AR).isoformat()
 
@@ -55,6 +80,18 @@ def ver_estado():
         "ultimo_fin": _estado["ultimo_fin"],
         "resultado": _estado["resultado"],
         "error": _estado["error"],
+    })
+
+
+@app.route("/logs")
+def ver_logs():
+    desde = request.args.get("desde", 0, type=int)
+    lineas = list(_log_buffer)
+    nuevas = lineas[desde:]
+    return jsonify({
+        "ok": True,
+        "total": len(lineas),
+        "lineas": nuevas,
     })
 
 
