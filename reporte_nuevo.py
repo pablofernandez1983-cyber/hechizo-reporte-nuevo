@@ -42,9 +42,7 @@ META_MULTIPLICADOR = {
     (2025,1):1.10,(2025,2):1.15,(2025,3):1.15,(2025,4):1.15,
     (2025,5):1.15,(2025,6):1.15,(2025,7):1.30,(2025,8):1.05,
     (2025,9):1.05,(2025,10):1.05,(2025,11):1.05,(2025,12):1.05,
-    (2026,1):1.05,(2026,2):1.05,(2026,3):1.05,(2026,4):1.05,
-    (2026,5):1.05,(2026,6):1.05,(2026,7):1.05,(2026,8):1.05,
-    (2026,9):1.05,(2026,10):1.05,(2026,11):1.05,(2026,12):1.05,
+    **{(2026, m): 1.05 for m in range(1, 13)},
 }
 META_MULTIPLICADOR_DEFAULT = 1.15
 
@@ -58,9 +56,7 @@ GADS_MULTIPLICADOR = {
     (2025,1):1.0,(2025,2):1.0,(2025,3):1.0,(2025,4):1.0,
     (2025,5):1.0,(2025,6):1.0,(2025,7):1.0,(2025,8):1.0,
     (2025,9):1.0,(2025,10):1.0,(2025,11):1.0,(2025,12):1.0,
-    (2026,1):1.0,(2026,2):1.0,(2026,3):1.0,(2026,4):1.0,
-    (2026,5):1.0,(2026,6):1.0,(2026,7):1.0,(2026,8):1.0,
-    (2026,9):1.0,(2026,10):1.0,(2026,11):1.0,(2026,12):1.0,
+    **{(2026, m): 1.0 for m in range(1, 13)},
 }
 GADS_MULTIPLICADOR_DEFAULT = 1.0
 
@@ -193,7 +189,15 @@ def get_db():
     try:
         if _db_conn is None or _db_conn.closed:
             import psycopg2
-            _db_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+            _db_conn = psycopg2.connect(
+                DATABASE_URL,
+                connect_timeout=10,
+                options="-c statement_timeout=60000",  # 60s max por query
+                keepalives=1,
+                keepalives_idle=10,
+                keepalives_interval=5,
+                keepalives_count=3,
+            )
             _db_conn.autocommit = False
         return _db_conn
     except Exception as e:
@@ -226,6 +230,8 @@ def db_exec_many(sql, rows):
         log(f"  [WARN] DB exec_many: {e}")
         try: conn.rollback()
         except: pass
+        global _db_conn
+        _db_conn = None  # fuerza reconexión en el próximo intento
         return False
 
 def guardar_ventas_db(orders):
@@ -602,7 +608,6 @@ def fetch_tiendanube():
                 actualizadas += 1
             if len(batch) < 200: break
             page += 1; time.sleep(0.5)
-        log(f"  TN {cursor.strftime('%Y-%m')} hasta {hasta.strftime('%Y-%m')}: cache {len(cache)} ordenes")
         cursor = hasta + timedelta(days=1)
         time.sleep(1)
 
@@ -613,12 +618,6 @@ def fetch_tiendanube():
 
     orders = list(cache.values())
     log(f"  TN procesando {len(orders)} ordenes totales")
-
-    # LOG TEMPORAL: ver shipping_option de órdenes específicas
-    ids_debug = {"1891221034","1875459000","1873008877","1871445226","1869928209"}
-    for o_d in orders:
-        if str(o_d.get("id","")) in ids_debug:
-            log(f"  DEBUG orden {o_d.get('id')}: shipping_option='{o_d.get('shipping_option','')}' shipping='{str(o_d.get('shipping',''))[:80]}'")
 
     acum = {k: defaultdict(float) for k in [
         "ventas_min","envio_min","dto_min",
@@ -667,6 +666,41 @@ def fetch_tiendanube():
 
 # ═══════════════════════════════════════════════════════════════
 # FUENTE 2: MERCADOPAGO
+def _mp_str_to_tuple_keys(d):
+    result = {}
+    for k, v in d.items():
+        try:
+            a, m = k.split(",")
+            result[(int(a), int(m))] = v
+        except:
+            pass
+    return result
+
+def _mp_dict_to_str_keys(d):
+    return {f"{k[0]},{k[1]}": v for k, v in d.items()}
+
+def _mp_indices(idx_map):
+    return {
+        "i_date":    idx_map.get("SETTLEMENT_DATE") or idx_map.get("TRANSACTION_DATE") or 0,
+        "i_fee":     idx_map.get("FEE_AMOUNT", -1),
+        "i_fin_fee": idx_map.get("FINANCING_FEE_AMOUNT", -1),
+        "i_mkp_fee": idx_map.get("MKP_FEE_AMOUNT", -1),
+        "i_taxes":   idx_map.get("TAXES_AMOUNT", -1),
+        "i_net":     idx_map.get("SETTLEMENT_NET_AMOUNT", -1),
+        "i_type":    idx_map.get("TRANSACTION_TYPE", -1),
+    }
+
+def _calcular_est_real(resultado, tabla, periodos):
+    return {
+        p: round(
+            resultado[p]
+            - tabla.get("compras", {}).get(p, 0.0)
+            - (tabla.get("ventas_min", {}).get(p, 0.0) + tabla.get("ventas_may", {}).get(p, 0.0)) / 2.8,
+            2
+        )
+        for p in periodos
+    }
+
 # ═══════════════════════════════════════════════════════════════
 
 def fetch_mercadopago():
@@ -694,26 +728,15 @@ def fetch_mercadopago():
                 ts = datetime.fromisoformat(cache_rapido["timestamp"])
                 edad_hs = (ahora_ar() - ts).total_seconds() / 3600
                 if edad_hs < 48:
-                    log(f"  MP cache válido ({edad_hs:.1f}hs < 48hs) — saltando descarga")
-                    def str_to_tuple_keys(d):
-                        result = {}
-                        for k, v in d.items():
-                            try:
-                                a, m = k.split(",")
-                                result[(int(a), int(m))] = v
-                            except:
-                                pass
-                        return result
+                    log(f"  MP cache válido ({edad_hs:.1f}hs) — saltando descarga")
                     return {
-                        "com_mp":   str_to_tuple_keys(cache_rapido.get("com_mp",   {})),
-                        "ret_iibb": str_to_tuple_keys(cache_rapido.get("ret_iibb", {})),
+                        "com_mp":   _mp_str_to_tuple_keys(cache_rapido.get("com_mp",   {})),
+                        "ret_iibb": _mp_str_to_tuple_keys(cache_rapido.get("ret_iibb", {})),
                     }
                 else:
-                    log(f"  MP cache expirado ({edad_hs:.1f}hs ≥ 48hs) — descargando")
+                    log(f"  MP cache expirado ({edad_hs:.1f}hs) — descargando")
             except Exception as e:
                 log(f"  MP cache timestamp inválido: {e} — descargando")
-    else:
-        log("  MP cache 48hs desactivado (MP_CACHE_48HS=false) — descargando")
 
     def _mp_descargar_bloque(desde_str, hasta_str, headers, base):
         """
@@ -934,22 +957,15 @@ def fetch_mercadopago():
     if lines[0].count(",") > lines[0].count(";"):
         sep = ","; log("  [WARN] MP CSV: separador detectado como coma")
 
-    log(f"  MP CSV total: {len(lines)} lineas, sep='{sep}'")
-    log(f"  MP CSV header: {lines[0][:200]}")
-    if len(lines) > 1: log(f"  MP CSV fila1: {lines[1][:200]}")
+    log(f"  MP CSV: {len(lines)} lineas, sep='{sep}'")
 
     header  = [c.strip().strip('"').upper() for c in lines[0].split(sep)]
     idx_map = {col: i for i, col in enumerate(header)}
-
-    i_date    = idx_map.get("SETTLEMENT_DATE") or idx_map.get("TRANSACTION_DATE") or 0
-    i_fee     = idx_map.get("FEE_AMOUNT", -1)
-    i_fin_fee = idx_map.get("FINANCING_FEE_AMOUNT", -1)
-    i_mkp_fee = idx_map.get("MKP_FEE_AMOUNT", -1)
-    i_taxes   = idx_map.get("TAXES_AMOUNT", -1)
-    i_net     = idx_map.get("SETTLEMENT_NET_AMOUNT", -1)
-    i_type    = idx_map.get("TRANSACTION_TYPE", -1)
-
-    log(f"  MP cols: date={i_date} fee={i_fee} fin_fee={i_fin_fee} mkp_fee={i_mkp_fee} taxes={i_taxes}")
+    ix = _mp_indices(idx_map)
+    i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type = (
+        ix["i_date"], ix["i_fee"], ix["i_fin_fee"], ix["i_mkp_fee"],
+        ix["i_taxes"], ix["i_net"], ix["i_type"]
+    )
 
     com_mp = defaultdict(float); ret_iibb = defaultdict(float)
     parsed = 0
@@ -968,17 +984,11 @@ def fetch_mercadopago():
         parsed += 1
 
     log(f"  MP settlement OK — {parsed} filas, com_mp={len(com_mp)} meses")
-    # Limpiar caché parcial — descarga completada exitosamente
     s3_guardar("mp_settlement_parcial.json", {})
-    log("  MP caché parcial limpiado")
-
-    # Guardar cache con timestamp para skip de 48hs en próximas corridas
-    def dict_to_str_keys(d):
-        return {f"{k[0]},{k[1]}": v for k, v in d.items()}
     s3_guardar("mp_settlement_cache.json", {
         "timestamp": ahora_ar().isoformat(),
-        "com_mp":   dict_to_str_keys(com_mp),
-        "ret_iibb": dict_to_str_keys(ret_iibb),
+        "com_mp":   _mp_dict_to_str_keys(com_mp),
+        "ret_iibb": _mp_dict_to_str_keys(ret_iibb),
     })
     log("  MP cache guardado en S3")
 
@@ -1225,17 +1235,10 @@ def fetch_manuales():
     result = {}
 
     result["ventas_manual"] = _leer_solapa(["Ventas","ventas"], 2, True, "Ventas manuales")
-    log(f"  Ventas manuales: {len(result['ventas_manual'])} meses")
-
     result["compras"] = _leer_solapa(
         ["Compra Materia prima - Producto","Compras","compras"], 3, False, "Compras")
-    log(f"  Compras: {len(result['compras'])} meses")
-
     result["sueldos"] = _leer_solapa(["Sueldos","sueldos"], 3, False, "Sueldos")
-    log(f"  Sueldos: {len(result['sueldos'])} meses")
-
     result["pub_agencia"] = _leer_solapa(["Publicidad","publicidad"], 3, False, "Agencia pub")
-    log(f"  Agencia pub: {len(result['pub_agencia'])} meses")
 
     correo_s3 = s3_leer("correo_historico.json") or []
     correo_h  = defaultdict(float)
@@ -1247,7 +1250,7 @@ def fetch_manuales():
 
     # TN abono — leer desde solapa "TN Abono" del Sheet Ingresos y Gastos
     tn_rows = leer_hoja(SHEET_ID_GASTOS, "Tiendanube_abono")
-    log(f"  TN Abono Sheet: {len(tn_rows)} filas, primeras 3: {tn_rows[:3]}")
+    log(f"  TN Abono Sheet: {len(tn_rows)} filas")
     tn_acum = defaultdict(float)
     if tn_rows:
         h = [str(x).strip() for x in tn_rows[0]]
@@ -1368,23 +1371,11 @@ def escribir_hoja1(periodos, tabla):
         egresos   = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c in CATEGORIAS_EGRESO) for p in periodos_ano}
         resultado = {p: round(ingresos[p]+egresos[p], 2) for p in periodos_ano}
         filas.append(["Totales"] + [resultado[p] for p in periodos_ano])
-        est_real = {
-            p: round(
-                resultado[p]
-                - tabla.get("compras", {}).get(p, 0.0)
-                - (tabla.get("ventas_min", {}).get(p, 0.0) + tabla.get("ventas_may", {}).get(p, 0.0)) / 2.8,
-                2
-            )
-            for p in periodos_ano
-        }
+        est_real = _calcular_est_real(resultado, tabla, periodos_ano)
         filas.append(["Estimacion Resultado Real"] + [est_real[p] for p in periodos_ano])
         rango = f"'{nombre_hoja}'!A1:Z{len(filas)+3}"
         escribir_hoja(SHEET_ID_RESUMEN, rango, filas)
-        log(f"  Hoja {ano}: {len(filas)} filas x {len(filas[0])} cols")
-        for p in periodos_ano:
-            if ingresos[p] or egresos[p]:
-                log(f"  {p[0]}/{p[1]:02d}  Ing={ingresos[p]:>14,.0f}  "
-                    f"Egr={egresos[p]:>14,.0f}  Res={resultado[p]:>14,.0f}")
+        log(f"  Hoja {ano}: {len(filas)} filas")
 
     escribir_hoja_detalle(periodos, tabla)
 
@@ -1440,15 +1431,7 @@ def escribir_hoja_detalle(periodos, tabla):
         egresos  = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c in CATEGORIAS_EGRESO) for p in periodos_ano}
         resultado = {p: round(ingresos[p]+egresos[p], 2) for p in periodos_ano}
         filas.append(["RESULTADO NETO", ""] + [resultado[p] for p in periodos_ano])
-        est_real = {
-            p: round(
-                resultado[p]
-                - tabla.get("compras", {}).get(p, 0.0)
-                - (tabla.get("ventas_min", {}).get(p, 0.0) + tabla.get("ventas_may", {}).get(p, 0.0)) / 2.8,
-                2
-            )
-            for p in periodos_ano
-        }
+        est_real = _calcular_est_real(resultado, tabla, periodos_ano)
         filas.append(["ESTIMACION RESULTADO REAL", ""] + [est_real[p] for p in periodos_ano])
 
         rango = f"'{nombre_hoja}'!A1:Z{len(filas)+3}"
@@ -1488,13 +1471,11 @@ def main():
         sep = ";" if lines[0].count(";") >= lines[0].count(",") else ","
         header = [c.strip().strip('"').upper() for c in lines[0].split(sep)]
         idx_map = {col: i for i, col in enumerate(header)}
-        i_date    = idx_map.get("SETTLEMENT_DATE") or idx_map.get("TRANSACTION_DATE") or 0
-        i_fee     = idx_map.get("FEE_AMOUNT", -1)
-        i_fin_fee = idx_map.get("FINANCING_FEE_AMOUNT", -1)
-        i_mkp_fee = idx_map.get("MKP_FEE_AMOUNT", -1)
-        i_taxes   = idx_map.get("TAXES_AMOUNT", -1)
-        i_net     = idx_map.get("SETTLEMENT_NET_AMOUNT", -1)
-        i_type    = idx_map.get("TRANSACTION_TYPE", -1)
+        ix = _mp_indices(idx_map)
+        i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type = (
+            ix["i_date"], ix["i_fee"], ix["i_fin_fee"], ix["i_mkp_fee"],
+            ix["i_taxes"], ix["i_net"], ix["i_type"]
+        )
         log(f"  {len(lines)} líneas, sep='{sep}'")
         # Truncar y reescribir limpio
         db_exec("TRUNCATE TABLE mp_settlement")
