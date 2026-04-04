@@ -1368,6 +1368,16 @@ def escribir_hoja1(periodos, tabla):
         egresos   = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c in CATEGORIAS_EGRESO) for p in periodos_ano}
         resultado = {p: round(ingresos[p]+egresos[p], 2) for p in periodos_ano}
         filas.append(["Totales"] + [resultado[p] for p in periodos_ano])
+        est_real = {
+            p: round(
+                resultado[p]
+                - tabla.get("compras", {}).get(p, 0.0)
+                - (tabla.get("ventas_min", {}).get(p, 0.0) + tabla.get("ventas_may", {}).get(p, 0.0)) / 2.8,
+                2
+            )
+            for p in periodos_ano
+        }
+        filas.append(["Estimacion Resultado Real"] + [est_real[p] for p in periodos_ano])
         rango = f"'{nombre_hoja}'!A1:Z{len(filas)+3}"
         escribir_hoja(SHEET_ID_RESUMEN, rango, filas)
         log(f"  Hoja {ano}: {len(filas)} filas x {len(filas[0])} cols")
@@ -1430,6 +1440,16 @@ def escribir_hoja_detalle(periodos, tabla):
         egresos  = {p: sum(tabla.get(r,{}).get(p,0.0) for r,_,c in PNL_FILAS if c in CATEGORIAS_EGRESO) for p in periodos_ano}
         resultado = {p: round(ingresos[p]+egresos[p], 2) for p in periodos_ano}
         filas.append(["RESULTADO NETO", ""] + [resultado[p] for p in periodos_ano])
+        est_real = {
+            p: round(
+                resultado[p]
+                - tabla.get("compras", {}).get(p, 0.0)
+                - (tabla.get("ventas_min", {}).get(p, 0.0) + tabla.get("ventas_may", {}).get(p, 0.0)) / 2.8,
+                2
+            )
+            for p in periodos_ano
+        }
+        filas.append(["ESTIMACION RESULTADO REAL", ""] + [est_real[p] for p in periodos_ano])
 
         rango = f"'{nombre_hoja}'!A1:Z{len(filas)+3}"
         escribir_hoja(SHEET_ID_RESUMEN, rango, filas)
