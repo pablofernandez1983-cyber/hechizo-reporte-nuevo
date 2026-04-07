@@ -1366,6 +1366,8 @@ def escribir_ventas_diarias(orders):
                 continue
             if dt.date() < corte:
                 continue
+            if o.get("payment_status") not in ("paid", "authorized"):
+                continue
             filas.append([
                 str(o.get("id", "")),
                 dt.strftime("%Y-%m-%d"),
