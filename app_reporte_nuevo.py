@@ -108,7 +108,7 @@ def historico():
         cur = conn.cursor()
         cur.execute("""
             SELECT fecha,
-                   ROUND(SUM(subtotal - descuento)::numeric, 0) AS total,
+                   ROUND(SUM(total)::numeric, 0) AS total,
                    COUNT(orden_id) AS cantidad
             FROM ventas
             WHERE fecha >= (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date - INTERVAL '45 days'
