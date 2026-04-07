@@ -1375,8 +1375,15 @@ def escribir_ventas_diarias(orders):
                 safe_float(o.get("total", 0)),
             ])
         crear_hoja_si_no_existe(SHEET_ID_RESUMEN, "Ventas_diarias")
+        # Limpiar toda la hoja primero para evitar que filas viejas queden debajo
+        get_svc().spreadsheets().values().clear(
+            spreadsheetId=SHEET_ID_RESUMEN, range="'Ventas_diarias'!A:D"
+        ).execute()
         rango = f"'Ventas_diarias'!A1:D{len(filas) + 1}"
-        escribir_hoja(SHEET_ID_RESUMEN, rango, filas)
+        get_svc().spreadsheets().values().update(
+            spreadsheetId=SHEET_ID_RESUMEN, range=rango,
+            valueInputOption="RAW", body={"values": filas}
+        ).execute()
         log(f"  Ventas_diarias: {len(filas) - 1} órdenes escritas (últimos 45 días)")
     except Exception as e:
         log(f"  [WARN] Ventas_diarias: {e}")
