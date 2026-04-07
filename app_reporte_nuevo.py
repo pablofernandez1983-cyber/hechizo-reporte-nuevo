@@ -111,7 +111,7 @@ def historico():
                    ROUND(SUM(subtotal - descuento)::numeric, 0) AS total,
                    COUNT(orden_id) AS cantidad
             FROM ventas
-            WHERE fecha >= CURRENT_DATE - INTERVAL '45 days'
+            WHERE fecha >= (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date - INTERVAL '45 days'
               AND estado_pago IN ('paid', 'authorized')
             GROUP BY fecha
             ORDER BY fecha
