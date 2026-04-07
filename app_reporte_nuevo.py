@@ -10,6 +10,8 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from reporte_nuevo import main as ejecutar_reporte
 
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
 app = Flask(__name__)
 CORS(app)
 
@@ -93,6 +95,37 @@ def ver_logs():
         "total": len(lineas),
         "lineas": nuevas,
     })
+
+
+@app.route("/historico")
+def historico():
+    """Devuelve ventas agrupadas por día para los últimos 45 días desde Supabase."""
+    if not DATABASE_URL:
+        return jsonify({"ok": False, "error": "DATABASE_URL no configurada"}), 500
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT fecha,
+                   ROUND(SUM(subtotal - descuento)::numeric, 0) AS total,
+                   COUNT(orden_id) AS cantidad
+            FROM ventas
+            WHERE fecha >= CURRENT_DATE - INTERVAL '45 days'
+              AND estado_pago IN ('paid', 'authorized')
+            GROUP BY fecha
+            ORDER BY fecha
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        dias = [
+            {"fecha": str(r[0]), "total": int(r[1]), "cantidad": int(r[2])}
+            for r in rows
+        ]
+        return jsonify({"ok": True, "dias": dias})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/ping")

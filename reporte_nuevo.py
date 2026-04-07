@@ -1350,43 +1350,6 @@ def crear_hoja_si_no_existe(sheet_id, nombre):
     except Exception as e:
         log(f"  [WARN] no se pudo crear hoja '{nombre}': {e}")
 
-def escribir_ventas_diarias(orders):
-    """Escribe los últimos 45 días de órdenes TN a la hoja Ventas_diarias.
-    Esto permite que el gráfico de 28 días tenga datos frescos, no solo hoy/ayer."""
-    log("Escribiendo Ventas_diarias...")
-    try:
-        corte = ahora_ar().date() - timedelta(days=45)
-        filas = [["Número de orden", "Fecha", "Estado del pago", "Total"]]
-        for o in orders:
-            try:
-                dt = datetime.fromisoformat(
-                    o.get("created_at", "").replace("Z", "+00:00")
-                ).astimezone(TZ_AR)
-            except Exception:
-                continue
-            if dt.date() < corte:
-                continue
-            if o.get("payment_status") not in ("paid", "authorized"):
-                continue
-            filas.append([
-                str(o.get("id", "")),
-                dt.strftime("%Y-%m-%d"),
-                str(o.get("payment_status", "")),
-                safe_float(o.get("total", 0)),
-            ])
-        crear_hoja_si_no_existe(SHEET_ID_RESUMEN, "Ventas_diarias")
-        # Limpiar toda la hoja primero para evitar que filas viejas queden debajo
-        get_svc().spreadsheets().values().clear(
-            spreadsheetId=SHEET_ID_RESUMEN, range="'Ventas_diarias'!A:D"
-        ).execute()
-        rango = f"'Ventas_diarias'!A1:D{len(filas) + 1}"
-        get_svc().spreadsheets().values().update(
-            spreadsheetId=SHEET_ID_RESUMEN, range=rango,
-            valueInputOption="RAW", body={"values": filas}
-        ).execute()
-        log(f"  Ventas_diarias: {len(filas) - 1} órdenes escritas (últimos 45 días)")
-    except Exception as e:
-        log(f"  [WARN] Ventas_diarias: {e}")
 
 def escribir_hoja1(periodos, tabla):
     log("Escribiendo hojas por año...")
@@ -1534,7 +1497,6 @@ def main():
         datos           = combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales)
         periodos, tabla = construir_pnl(datos)
         escribir_hoja1(periodos, tabla)
-        escribir_ventas_diarias(tn_orders)
 
         if DATABASE_URL:
             log("Guardando en Supabase...")
