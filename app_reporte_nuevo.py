@@ -143,8 +143,8 @@ def historico_mensual():
                    COUNT(orden_id)                AS cantidad
             FROM ventas
             WHERE estado_pago IN ('paid', 'authorized')
-            GROUP BY anio, mes
-            ORDER BY anio, mes
+            GROUP BY 1, 2
+            ORDER BY 1, 2
         """)
         rows = cur.fetchall()
         cur.close()
