@@ -128,6 +128,36 @@ def historico():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/historico-mensual")
+def historico_mensual():
+    """Devuelve cantidad de ventas agrupada por mes (anio, mes, cantidad)."""
+    if not DATABASE_URL:
+        return jsonify({"ok": False, "error": "DATABASE_URL no configurada"}), 500
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT EXTRACT(YEAR FROM fecha)::int  AS anio,
+                   EXTRACT(MONTH FROM fecha)::int AS mes,
+                   COUNT(orden_id)                AS cantidad
+            FROM ventas
+            WHERE estado_pago IN ('paid', 'authorized')
+            GROUP BY anio, mes
+            ORDER BY anio, mes
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        meses = [
+            {"anio": r[0], "mes": r[1], "cantidad": int(r[2])}
+            for r in rows
+        ]
+        return jsonify({"ok": True, "meses": meses})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/ping")
 def ping():
     return jsonify({"ok": True, "msg": "hechizo-reporte-nuevo running"})
