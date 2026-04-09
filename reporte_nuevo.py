@@ -186,23 +186,23 @@ def get_db():
     global _db_conn
     if not DATABASE_URL:
         return None
-    try:
-        if _db_conn is None or _db_conn.closed:
-            import psycopg2
+    if _db_conn is not None and not _db_conn.closed:
+        return _db_conn
+    import psycopg2
+    for intento in range(3):
+        try:
             _db_conn = psycopg2.connect(
                 DATABASE_URL,
-                connect_timeout=10,
-                options="-c statement_timeout=60000",  # 60s max por query
-                keepalives=1,
-                keepalives_idle=10,
-                keepalives_interval=5,
-                keepalives_count=3,
+                connect_timeout=15,
             )
             _db_conn.autocommit = False
-        return _db_conn
-    except Exception as e:
-        log(f"  [WARN] DB connect: {e}")
-        return None
+            return _db_conn
+        except Exception as e:
+            log(f"  [WARN] DB connect intento {intento+1}/3: {e}")
+            _db_conn = None
+            if intento < 2:
+                time.sleep(3)
+    return None
 
 def db_exec(sql, params=None):
     conn = get_db()
