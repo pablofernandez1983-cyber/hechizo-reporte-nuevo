@@ -395,15 +395,50 @@ def _stock_compute():
 
     valuacion_total = sum(v["stock"] * v["precio_venta"] for v in variantes)
 
+    # ── 4. Guardar valuación diaria y obtener mes anterior ────────────────
+    valuacion_mes_anterior = None
+    if DATABASE_URL:
+        try:
+            import psycopg2
+            conn2 = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+            cur2  = conn2.cursor()
+            cur2.execute("""
+                CREATE TABLE IF NOT EXISTS stock_valuacion (
+                    fecha           DATE PRIMARY KEY,
+                    valuacion_total NUMERIC(14,2)
+                )
+            """)
+            today_ar        = datetime.now(TZ_AR).date()
+            first_of_month  = today_ar.replace(day=1)
+            cur2.execute("""
+                INSERT INTO stock_valuacion (fecha, valuacion_total)
+                VALUES (%s, %s)
+                ON CONFLICT (fecha) DO UPDATE SET valuacion_total = EXCLUDED.valuacion_total
+            """, (today_ar, round(valuacion_total, 2)))
+            cur2.execute("""
+                SELECT valuacion_total FROM stock_valuacion
+                WHERE fecha < %s
+                ORDER BY fecha DESC
+                LIMIT 1
+            """, (first_of_month,))
+            row = cur2.fetchone()
+            if row:
+                valuacion_mes_anterior = float(row[0])
+            conn2.commit()
+            cur2.close(); conn2.close()
+        except Exception as e:
+            errores.append("Val hist: " + str(e))
+
     return {
-        "ok":             True,
-        "generado_en":    datetime.now(TZ_AR).strftime("%d/%m/%Y %H:%M"),
-        "total":          len(variantes),
-        "errores":        errores,
-        "variantes":      variantes,
-        "alertas":        alertas,
-        "top20":          top20,
-        "valuacion_total": valuacion_total,
+        "ok":                    True,
+        "generado_en":           datetime.now(TZ_AR).strftime("%d/%m/%Y %H:%M"),
+        "total":                 len(variantes),
+        "errores":               errores,
+        "variantes":             variantes,
+        "alertas":               alertas,
+        "top20":                 top20,
+        "valuacion_total":       valuacion_total,
+        "valuacion_mes_anterior": valuacion_mes_anterior,
     }
 
 
