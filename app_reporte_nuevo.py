@@ -164,6 +164,17 @@ def historico_mensual():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/stock-data")
+def stock_data():
+    """Devuelve los datos de stock como JSON para el dashboard."""
+    import traceback as _tb
+    try:
+        result = _stock_compute()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "trace": _tb.format_exc()}), 500
+
+
 @app.route("/stock")
 def stock():
     import traceback as _tb
@@ -226,7 +237,8 @@ _STOCK_TH = (
 )
 
 
-def _stock_render():
+def _stock_compute():
+    """Calcula datos de stock y los devuelve como dict (reutilizado por JSON y HTML)."""
     errores = []
 
     # ── 1. Ventas últimos 90 días desde Supabase ──────────────────────────
@@ -307,13 +319,29 @@ def _stock_render():
     alertas = [v for v in variantes if v["cobertura"] is not None and v["cobertura"] < 21]
     top20   = sorted(variantes, key=lambda v: -v["unidades_90"])[:20]
 
-    # ── 4. Contar chips ────────────────────────────────────────────────────
+    return {
+        "ok":          True,
+        "generado_en": datetime.now(TZ_AR).strftime("%d/%m/%Y %H:%M"),
+        "total":       len(variantes),
+        "errores":     errores,
+        "variantes":   variantes,
+        "alertas":     alertas,
+        "top20":       top20,
+    }
+
+
+def _stock_render():
+    d        = _stock_compute()
+    errores  = d["errores"]
+    variantes = d["variantes"]
+    alertas  = d["alertas"]
+    top20    = d["top20"]
+    total_v  = d["total"]
+    n_alerta = len(alertas)
     n_red    = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "red")
     n_orange = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "orange")
     n_yellow = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "yellow")
-    total_v  = len(variantes)
-    n_alerta = len(alertas)
-    gen_en   = datetime.now(TZ_AR).strftime("%d/%m/%Y %H:%M")
+    gen_en   = d["generado_en"]
 
     # ── 5. Construir HTML ─────────────────────────────────────────────────
     err_html = "".join(
