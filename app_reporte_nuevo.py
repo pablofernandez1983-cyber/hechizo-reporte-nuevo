@@ -277,15 +277,17 @@ def _stock_rows(items, idx_start=0):
            "yellow": "rgba(251,191,36,0.05)"}
     out = []
     for i, v in enumerate(items):
-        c   = _cob_color(v["cobertura"])
-        bg  = (' style="background:' + bgs[c] + '"') if c in bgs else ""
+        c    = _cob_color(v["cobertura"])
+        bg   = (' style="background:' + bgs[c] + '"') if c in bgs else ""
         srch = (v["nombre"] + " " + v["variante"] + " " + v["sku"]).lower()
         var_span = (' <span class="var">' + v["variante"] + "</span>") if v["variante"] else ""
+        sku_span = ('<span class="sku-sub">' + v["sku"] + "</span>") if v["sku"] else ""
         row = (
-            "<tr" + bg + ' data-search="' + srch + '">'
+            "<tr" + bg
+            + ' data-search="' + srch + '"'
+            + ' data-cob-color="' + c + '">'
             + '<td class="num">' + str(idx_start + i + 1) + "</td>"
-            + "<td>" + v["nombre"] + var_span + "</td>"
-            + '<td class="mono">' + v["sku"] + "</td>"
+            + "<td>" + v["nombre"] + var_span + sku_span + "</td>"
             + '<td class="num">' + str(v["stock"]) + "</td>"
             + '<td class="num">' + str(v["unidades_90"]) + "</td>"
             + '<td class="num">' + _cob_badge(v["cobertura"]) + "</td>"
@@ -297,12 +299,12 @@ def _stock_rows(items, idx_start=0):
 
 _STOCK_TH = (
     "<thead><tr>"
-    '<th class="num">#</th>'
+    '<th class="num" style="width:36px">#</th>'
     '<th class="sortable" onclick="sortTable(this,1)">Producto</th>'
-    '<th class="sortable" onclick="sortTable(this,2)">SKU</th>'
-    '<th class="sortable num" onclick="sortTable(this,3)">Stock</th>'
-    '<th class="sortable num" onclick="sortTable(this,4)">Vendidos 90d</th>'
-    '<th class="sortable num" onclick="sortTable(this,5)">Cobertura</th>'
+    '<th class="sortable num" onclick="sortTable(this,2)" style="width:72px">Stock</th>'
+    '<th class="sortable num" onclick="sortTable(this,3)" style="width:106px">'
+    '<span style="font-size:10px;line-height:1.4">Ventas<br>ult. 90d</span></th>'
+    '<th class="sortable num" onclick="sortTable(this,4)" style="width:88px">Cobertura</th>'
     "</tr></thead>"
 )
 
@@ -361,12 +363,14 @@ def _stock_compute():
                         str(val.get("es") or val.get("en") or val.get("pt") or "")
                         for val in vals if isinstance(val, dict)
                     )
+                    precio_venta = float(var.get("promotional_price") or var.get("price") or 0)
                     variantes.append({
-                        "variante_id": int(vid),
-                        "nombre":      nombre_prod,
-                        "variante":    var_str,
-                        "sku":         var.get("sku") or "",
-                        "stock":       int(stock_val),
+                        "variante_id":  int(vid),
+                        "nombre":       nombre_prod,
+                        "variante":     var_str,
+                        "sku":          var.get("sku") or "",
+                        "stock":        int(stock_val),
+                        "precio_venta": precio_venta,
                     })
             if len(batch) < 200: break
             page += 1
@@ -389,33 +393,60 @@ def _stock_compute():
     alertas = [v for v in variantes if v["cobertura"] is not None and v["cobertura"] < 21]
     top20   = sorted(variantes, key=lambda v: -v["unidades_90"])[:20]
 
+    valuacion_total = sum(v["stock"] * v["precio_venta"] for v in variantes)
+
     return {
-        "ok":          True,
-        "generado_en": datetime.now(TZ_AR).strftime("%d/%m/%Y %H:%M"),
-        "total":       len(variantes),
-        "errores":     errores,
-        "variantes":   variantes,
-        "alertas":     alertas,
-        "top20":       top20,
+        "ok":             True,
+        "generado_en":    datetime.now(TZ_AR).strftime("%d/%m/%Y %H:%M"),
+        "total":          len(variantes),
+        "errores":        errores,
+        "variantes":      variantes,
+        "alertas":        alertas,
+        "top20":          top20,
+        "valuacion_total": valuacion_total,
     }
 
 
 def _stock_render():
-    d        = _stock_compute()
-    errores  = d["errores"]
+    d         = _stock_compute()
+    errores   = d["errores"]
     variantes = d["variantes"]
-    alertas  = d["alertas"]
-    top20    = d["top20"]
-    total_v  = d["total"]
-    n_alerta = len(alertas)
-    n_red    = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "red")
-    n_orange = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "orange")
-    n_yellow = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "yellow")
-    gen_en   = d["generado_en"]
+    alertas   = d["alertas"]
+    top20     = d["top20"]
+    total_v   = d["total"]
+    n_alerta  = len(alertas)
+    n_red     = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "red")
+    n_orange  = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "orange")
+    n_yellow  = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "yellow")
+    gen_en    = d["generado_en"]
+    val_total = d.get("valuacion_total", 0)
 
-    # ── 5. Construir HTML ─────────────────────────────────────────────────
+    # Formatear valuación estilo AR: $ 1.234.567
+    val_str = "$ " + "{:,.0f}".format(val_total).replace(",", ".")
+
     err_html = "".join(
         '<div class="error-msg">&#9888; ' + e + '</div>' for e in errores
+    )
+
+    val_card = (
+        '<div class="val-card">'
+        '<div class="val-label">Valuaci&#243;n del stock</div>'
+        '<div class="val-amount">' + val_str + '</div>'
+        '<div class="val-sub">precio de venta &times; stock actual</div>'
+        '</div>'
+    )
+
+    chips = (
+        '<div class="stat-chips">'
+        '<div class="chip chip-filter active" data-filter="" onclick="setChip(this)">'
+        '<span>' + str(total_v) + '</span>todas las variantes</div>'
+        '<div class="chip chip-filter" data-filter="red" onclick="setChip(this)">'
+        '<span class="red">' + str(n_red) + '</span>cobertura &lt;7d</div>'
+        '<div class="chip chip-filter" data-filter="orange" onclick="setChip(this)">'
+        '<span class="orange">' + str(n_orange) + '</span>cobertura 7-14d</div>'
+        '<div class="chip chip-filter" data-filter="yellow" onclick="setChip(this)">'
+        '<span class="yellow">' + str(n_yellow) + '</span>cobertura 14-21d</div>'
+        '</div>'
     )
 
     alerta_sec = ""
@@ -438,18 +469,9 @@ def _stock_render():
     tabla_sec = (
         '<div class="section">'
         '<div class="section-title">&#128230; Todas las variantes (' + str(total_v) + ')</div>'
-        '<div class="search-wrap"><input type="text" id="srch" placeholder="Buscar nombre, variante o SKU..." oninput="filtrar(this.value)"></div>'
+        '<div class="search-wrap"><input type="text" id="srch" placeholder="Buscar nombre, variante o SKU..." oninput="aplicarFiltros()"></div>'
         + '<table id="tc">' + _STOCK_TH + '<tbody id="tb">' + _stock_rows(variantes) + '</tbody></table>'
         + '</div>'
-    )
-
-    chips = (
-        '<div class="stat-chips">'
-        '<div class="chip"><span>' + str(total_v) + '</span>variantes activas</div>'
-        '<div class="chip"><span class="red">' + str(n_red) + '</span>cobertura &lt;7d</div>'
-        '<div class="chip"><span class="orange">' + str(n_orange) + '</span>cobertura 7-14d</div>'
-        '<div class="chip"><span class="yellow">' + str(n_yellow) + '</span>cobertura 14-21d</div>'
-        '</div>'
     )
 
     css = """
@@ -457,7 +479,7 @@ def _stock_render():
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;font-size:14px;padding:20px}
 h1{font-size:20px;font-weight:700;margin-bottom:4px}
-.meta{color:var(--muted);font-size:12px;margin-bottom:20px}
+.meta{color:var(--muted);font-size:12px;margin-bottom:16px}
 a{color:var(--success);text-decoration:none}
 .section{margin-bottom:32px}
 .section-title{font-size:15px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
@@ -468,23 +490,39 @@ th{color:var(--muted);font-size:12px;font-weight:500;background:var(--card);posi
 tr:hover{background:rgba(255,255,255,.03)}
 td.num,th.num{text-align:right}
 .var{color:var(--muted);font-size:12px}
-.mono{font-family:monospace;font-size:12px;color:var(--muted)}
+.sku-sub{display:block;font-size:11px;color:var(--muted);font-family:monospace;margin-top:2px}
 .sortable{cursor:pointer;user-select:none}
 .sortable:hover{color:var(--text)}
 .search-wrap{margin-bottom:12px}
 .search-wrap input{width:100%;max-width:400px;background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:14px;outline:none}
 .search-wrap input:focus{border-color:var(--success)}
-.stat-chips{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+.stat-chips{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
 .chip{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:13px}
 .chip span{font-weight:700;font-size:16px;display:block}
 .chip .red{color:#f87171}.chip .orange{color:#fb923c}.chip .yellow{color:#fbbf24}
+.chip-filter{cursor:pointer;transition:border-color .15s}
+.chip-filter:hover{border-color:#4b5563}
+.chip-filter.active{border-color:var(--success);box-shadow:0 0 0 1px var(--success)}
+.val-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 20px;margin-bottom:20px;display:inline-block;min-width:210px}
+.val-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+.val-amount{font-size:26px;font-weight:700;color:var(--success)}
+.val-sub{font-size:11px;color:var(--muted);margin-top:3px}
 """
 
     js = """
-function filtrar(q){
-  q=q.toLowerCase().trim();
-  document.querySelectorAll('#tb tr').forEach(tr=>{
-    tr.style.display=(!q||tr.dataset.search.includes(q))?'':'none';
+var _chipFilter='';
+function setChip(el){
+  document.querySelectorAll('.chip-filter').forEach(function(c){c.classList.remove('active');});
+  el.classList.add('active');
+  _chipFilter=el.dataset.filter;
+  aplicarFiltros();
+}
+function aplicarFiltros(){
+  var q=(document.getElementById('srch').value||'').toLowerCase().trim();
+  document.querySelectorAll('#tb tr').forEach(function(tr){
+    var matchText=!q||tr.dataset.search.includes(q);
+    var matchChip=!_chipFilter||tr.dataset.cobColor===_chipFilter;
+    tr.style.display=(matchText&&matchChip)?'':'none';
   });
 }
 function sortTable(th,col){
@@ -510,9 +548,10 @@ function sortTable(th,col){
         '<title>Stock - Hechizo</title>'
         "<style>" + css + "</style>"
         "</head><body>"
-        "<h1>Stock Hechizo</h1>"
+        "<h1>Stock &mdash; Hechizo Bijou</h1>"
         '<div class="meta">Generado ' + gen_en + ' &nbsp;&middot;&nbsp; <a href="/">&#8592; Volver al reporte</a></div>'
         + err_html
+        + val_card
         + chips
         + alerta_sec
         + top20_sec
