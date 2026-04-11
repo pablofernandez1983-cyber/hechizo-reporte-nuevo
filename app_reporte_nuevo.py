@@ -164,6 +164,76 @@ def historico_mensual():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/stock-debug")
+def stock_debug():
+    """Diagnóstico: chequea estado de ventas_detalle y ventas."""
+    import traceback as _tb
+    out = {"ok": True}
+    if not DATABASE_URL:
+        return jsonify({"ok": False, "error": "DATABASE_URL no configurada"}), 500
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        cur = conn.cursor()
+
+        # 1. ¿Existe la tabla?
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'ventas_detalle'
+            )
+        """)
+        out["tabla_existe"] = cur.fetchone()[0]
+
+        # 2. ¿Cuántas filas?
+        if out["tabla_existe"]:
+            cur.execute("SELECT COUNT(*) FROM ventas_detalle")
+            out["total_filas"] = cur.fetchone()[0]
+
+            # 3. Muestra de hasta 5 filas
+            cur.execute("SELECT * FROM ventas_detalle ORDER BY id DESC LIMIT 5")
+            cols = [d[0] for d in cur.description]
+            out["muestra"] = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # 4. Rango de fechas en ventas_detalle (via join)
+            cur.execute("""
+                SELECT MIN(v.fecha), MAX(v.fecha), COUNT(DISTINCT vd.orden_id)
+                FROM ventas_detalle vd
+                JOIN ventas v ON v.orden_id = vd.orden_id
+            """)
+            row = cur.fetchone()
+            out["fecha_min"] = str(row[0]) if row[0] else None
+            out["fecha_max"] = str(row[1]) if row[1] else None
+            out["ordenes_distintas"] = row[2]
+        else:
+            out["total_filas"] = 0
+            out["muestra"] = []
+
+        # 5. Cuántas ventas hay en tabla ventas (últimos 90 días)
+        cur.execute("""
+            SELECT COUNT(*) FROM ventas
+            WHERE fecha >= (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date - INTERVAL '90 days'
+              AND estado_pago IN ('paid', 'authorized')
+        """)
+        out["ventas_90d"] = cur.fetchone()[0]
+
+        # 6. Columnas de ventas_detalle
+        if out["tabla_existe"]:
+            cur.execute("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = 'ventas_detalle'
+                ORDER BY ordinal_position
+            """)
+            out["columnas"] = [{"col": r[0], "tipo": r[1]} for r in cur.fetchall()]
+
+        cur.close(); conn.close()
+    except Exception as e:
+        out["error"] = str(e)
+        out["trace"] = _tb.format_exc()
+    return jsonify(out)
+
+
 @app.route("/stock-data")
 def stock_data():
     """Devuelve los datos de stock como JSON para el dashboard."""
