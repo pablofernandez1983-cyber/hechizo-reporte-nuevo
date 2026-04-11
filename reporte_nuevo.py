@@ -282,6 +282,53 @@ def guardar_ventas_db(orders):
     ok = db_exec_many(sql, rows)
     if ok: log(f"  DB: {len(rows)} ventas guardadas")
 
+def guardar_ventas_detalle_db(orders):
+    """Inserta el detalle de productos de cada orden en ventas_detalle."""
+    if not DATABASE_URL: return
+    db_exec("""
+        CREATE TABLE IF NOT EXISTS ventas_detalle (
+            id            BIGSERIAL PRIMARY KEY,
+            orden_id      BIGINT NOT NULL,
+            variante_id   BIGINT NOT NULL,
+            product_id    BIGINT,
+            nombre        TEXT,
+            variante      TEXT,
+            sku           TEXT,
+            cantidad      INT,
+            precio_unitario NUMERIC(12,2),
+            UNIQUE (orden_id, variante_id)
+        )
+    """)
+    log("  DB: guardando ventas_detalle...")
+    rows = []
+    for o in orders:
+        if o.get("status") == "cancelled": continue
+        if o.get("payment_status") not in ("paid", "authorized"): continue
+        orden_id = o.get("id")
+        if not orden_id: continue
+        for p in (o.get("products") or []):
+            variante_id = p.get("variant_id") or p.get("id")
+            if not variante_id: continue
+            product_id = p.get("product_id")
+            nombre = p.get("name", "") or ""
+            variant_values = p.get("variant_values") or []
+            variante = " / ".join(
+                str(v.get("es") or v.get("en") or v.get("pt") or (list(v.values())[0] if v else ""))
+                for v in variant_values if isinstance(v, dict)
+            )
+            sku      = p.get("sku", "") or ""
+            cantidad = int(p.get("quantity") or 0)
+            precio   = float(p.get("price") or 0)
+            rows.append((orden_id, variante_id, product_id, nombre, variante, sku, cantidad, precio))
+    sql = """
+        INSERT INTO ventas_detalle
+            (orden_id, variante_id, product_id, nombre, variante, sku, cantidad, precio_unitario)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (orden_id, variante_id) DO NOTHING
+    """
+    ok = db_exec_many(sql, rows)
+    if ok: log(f"  DB: {len(rows)} items ventas_detalle guardados")
+
 def guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type):
     if not DATABASE_URL: return
     log("  DB: guardando MP settlement...")
@@ -1501,6 +1548,7 @@ def main():
         if DATABASE_URL:
             log("Guardando en Supabase...")
             guardar_ventas_db(tn_orders)
+            guardar_ventas_detalle_db(tn_orders)
             raw = mp.get("_raw", {})
             if raw:
                 guardar_mp_db(raw["lines"], raw["header"], raw["sep"],
