@@ -253,9 +253,9 @@ def guardar_ventas_db(orders):
         elif medio_env.startswith("mot"): carrier = "moto"
         elif "1978" in tracking:      carrier = "correo"
         else:                         carrier = "otro"
-        payment_details = o.get("payment_details") or []
-        gateways = [p.get("payment_method_id","") or "" for p in payment_details if isinstance(p, dict)]
-        is_may = any("transfer" in g.lower() or "deposito" in g.lower() for g in gateways)
+        coupons = o.get("coupon") or []
+        coupon_codes = [c.get("code","") or "" for c in coupons if isinstance(c, dict)]
+        is_may = any("mayo" in c.lower() for c in coupon_codes)
         customer = o.get("customer") or {}
         rows.append((
             o.get("id"), dt.date(), dt.year, dt.month,
@@ -276,8 +276,9 @@ def guardar_ventas_db(orders):
         ON CONFLICT (orden_id) DO UPDATE SET
             subtotal=EXCLUDED.subtotal, descuento=EXCLUDED.descuento,
             envio_cobrado=EXCLUDED.envio_cobrado, total=EXCLUDED.total,
+            tipo=EXCLUDED.tipo, carrier=EXCLUDED.carrier,
             estado_pago=EXCLUDED.estado_pago, estado_envio=EXCLUDED.estado_envio,
-            tracking=EXCLUDED.tracking, carrier=EXCLUDED.carrier
+            tracking=EXCLUDED.tracking
     """
     ok = db_exec_many(sql, rows)
     if ok: log(f"  DB: {len(rows)} ventas guardadas")
@@ -686,9 +687,9 @@ def fetch_tiendanube():
         tracking      = str(o.get("shipping_tracking_number","") or "").lower()
         medio_env     = str(o.get("shipping_option","") or "").lower()
 
-        payment_details = o.get("payment_details") or []
-        gateways = [p.get("payment_method_id","") or "" for p in payment_details if isinstance(p, dict)]
-        is_may = any("transfer" in g.lower() or "deposito" in g.lower() for g in gateways)
+        coupons = o.get("coupon") or []
+        coupon_codes = [c.get("code","") or "" for c in coupons if isinstance(c, dict)]
+        is_may = any("mayo" in c.lower() for c in coupon_codes)
 
         prefix = "may" if is_may else "min"
         acum[f"ventas_{prefix}"][k] += subtotal
