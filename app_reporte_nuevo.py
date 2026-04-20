@@ -3,7 +3,7 @@ app_reporte_nuevo.py — Flask wrapper para Railway
 Expone reporte_nuevo.py como endpoint HTTP.
 """
 
-import os, sys, threading, io, requests
+import os, sys, threading, io, requests, json, time
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request
@@ -111,6 +111,69 @@ def ver_estado():
         "error": _estado["error"],
         "warnings": _estado["warnings"],
     })
+
+
+@app.route("/tokens")
+def ver_tokens():
+    tokens = []
+    hoy = datetime.now(timezone.utc)
+
+    # ── Meta Ads token ─────────────────────────────────────────────
+    meta_token  = os.environ.get("META_ACCESS_TOKEN", "")
+    meta_app_id = os.environ.get("META_APP_ID", "")
+    meta_secret = os.environ.get("META_APP_SECRET", "")
+    if meta_token and meta_app_id and meta_secret:
+        try:
+            r = requests.get(
+                "https://graph.facebook.com/debug_token",
+                params={"input_token": meta_token, "access_token": f"{meta_app_id}|{meta_secret}"},
+                timeout=8
+            )
+            d = r.json().get("data", {})
+            expires_ts = d.get("expires_at")
+            is_valid   = d.get("is_valid", False)
+            if expires_ts:
+                expires_dt = datetime.fromtimestamp(expires_ts, tz=timezone.utc)
+                dias = (expires_dt - hoy).days
+                tokens.append({
+                    "nombre": "Meta Ads",
+                    "valido": is_valid,
+                    "expira": expires_dt.strftime("%d/%m/%Y"),
+                    "dias_restantes": dias,
+                })
+            else:
+                tokens.append({"nombre": "Meta Ads", "valido": False, "expira": None, "dias_restantes": 0})
+        except Exception as e:
+            tokens.append({"nombre": "Meta Ads", "valido": None, "expira": None, "dias_restantes": None, "error": str(e)})
+
+    # ── Tiendanube session (TN_STATE_JSON cookies) ─────────────────
+    tn_state_raw = os.environ.get("TN_STATE_JSON", "")
+    if tn_state_raw:
+        try:
+            state = json.loads(tn_state_raw)
+            cookies = state.get("cookies", [])
+            # Buscar la cookie con menor expiración (ignorar session cookies sin expires)
+            min_expires = None
+            for c in cookies:
+                exp = c.get("expires")
+                if exp and exp > 0:
+                    dt = datetime.fromtimestamp(exp, tz=timezone.utc)
+                    if min_expires is None or dt < min_expires:
+                        min_expires = dt
+            if min_expires:
+                dias = (min_expires - hoy).days
+                tokens.append({
+                    "nombre": "Tiendanube sesión",
+                    "valido": dias > 0,
+                    "expira": min_expires.strftime("%d/%m/%Y"),
+                    "dias_restantes": dias,
+                })
+            else:
+                tokens.append({"nombre": "Tiendanube sesión", "valido": True, "expira": "sin expiración", "dias_restantes": 999})
+        except Exception as e:
+            tokens.append({"nombre": "Tiendanube sesión", "valido": None, "expira": None, "dias_restantes": None, "error": str(e)})
+
+    return jsonify({"ok": True, "tokens": tokens})
 
 
 @app.route("/logs")
