@@ -402,7 +402,7 @@ def _stock_compute():
 
     alertas             = [v for v in variantes if v["cobertura"] is not None and v["cobertura"] < 21]
     top20               = sorted(variantes, key=lambda v: -v["unidades_90"])[:20]
-    candidatos_liquidar = [v for v in variantes if v["stock"] >= 3 and v["unidades_180"] == 0]
+    candidatos_liquidar = [v for v in variantes if v["stock"] >= 1 and v["unidades_180"] == 0]
 
     valuacion_total = sum(v["stock"] * v["precio_venta"] for v in variantes)
 
