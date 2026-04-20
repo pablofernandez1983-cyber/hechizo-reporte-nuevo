@@ -313,23 +313,29 @@ def _stock_compute():
     """Calcula datos de stock y los devuelve como dict (reutilizado por JSON y HTML)."""
     errores = []
 
-    # ── 1. Ventas últimos 90 días desde Supabase ──────────────────────────
-    ventas_90 = {}
+    # ── 1. Ventas últimos 180 días desde Supabase (3 buckets) ────────────
+    ventas_30 = {}; ventas_90 = {}; ventas_180 = {}
     if DATABASE_URL:
         try:
             import psycopg2
             conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
             cur  = conn.cursor()
             cur.execute("""
-                SELECT vd.variante_id, SUM(vd.cantidad) AS unidades
+                SELECT vd.variante_id,
+                       SUM(CASE WHEN v.fecha >= (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date - INTERVAL '30 days'  THEN vd.cantidad ELSE 0 END) AS u30,
+                       SUM(CASE WHEN v.fecha >= (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date - INTERVAL '90 days'  THEN vd.cantidad ELSE 0 END) AS u90,
+                       SUM(vd.cantidad) AS u180
                 FROM ventas_detalle vd
                 JOIN ventas v ON v.orden_id = vd.orden_id
                 WHERE v.fecha >= (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date
-                      - INTERVAL '90 days'
+                      - INTERVAL '180 days'
+                  AND v.estado_pago IN ('paid','authorized')
                 GROUP BY vd.variante_id
             """)
-            for vid, uni in cur.fetchall():
-                ventas_90[int(vid)] = int(uni)
+            for vid, u30, u90, u180 in cur.fetchall():
+                ventas_30[int(vid)]  = int(u30)
+                ventas_90[int(vid)]  = int(u90)
+                ventas_180[int(vid)] = int(u180)
             cur.close(); conn.close()
         except Exception as e:
             errores.append("DB: " + str(e))
@@ -379,10 +385,14 @@ def _stock_compute():
 
     # ── 3. Cruzar y calcular métricas ─────────────────────────────────────
     for v in variantes:
-        u90 = ventas_90.get(v["variante_id"], 0)
-        vel = u90 / 90
-        v["unidades_90"] = u90
-        v["cobertura"]   = round(v["stock"] / vel, 1) if vel > 0 else None
+        u30  = ventas_30.get(v["variante_id"], 0)
+        u90  = ventas_90.get(v["variante_id"], 0)
+        u180 = ventas_180.get(v["variante_id"], 0)
+        v["unidades_30"]  = u30
+        v["unidades_90"]  = u90
+        v["unidades_180"] = u180
+        vel90 = u90 / 90
+        v["cobertura"] = round(v["stock"] / vel90, 1) if vel90 > 0 else None
 
     variantes.sort(key=lambda v: (
         0 if v["cobertura"] is not None else 1,
@@ -390,8 +400,9 @@ def _stock_compute():
         -v["unidades_90"]
     ))
 
-    alertas = [v for v in variantes if v["cobertura"] is not None and v["cobertura"] < 21]
-    top20   = sorted(variantes, key=lambda v: -v["unidades_90"])[:20]
+    alertas             = [v for v in variantes if v["cobertura"] is not None and v["cobertura"] < 21]
+    top20               = sorted(variantes, key=lambda v: -v["unidades_90"])[:20]
+    candidatos_liquidar = [v for v in variantes if v["stock"] >= 3 and v["unidades_180"] == 0]
 
     valuacion_total = sum(v["stock"] * v["precio_venta"] for v in variantes)
 
@@ -437,6 +448,7 @@ def _stock_compute():
         "variantes":             variantes,
         "alertas":               alertas,
         "top20":                 top20,
+        "candidatos_liquidar":   candidatos_liquidar,
         "valuacion_total":       valuacion_total,
         "valuacion_mes_anterior": valuacion_mes_anterior,
     }
