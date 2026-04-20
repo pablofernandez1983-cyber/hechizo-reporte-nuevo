@@ -29,6 +29,7 @@ _estado = {
     "ultimo_fin": None,
     "resultado": None,
     "error": None,
+    "warnings": [],
 }
 
 _log_buffer = deque(maxlen=200)  # últimas 200 líneas
@@ -51,6 +52,25 @@ class _LogCapture(io.TextIOBase):
         self._original.flush()
 
 
+_FUENTES_WARN = [
+    ("Meta Ads",    ["meta"]),
+    ("Google Ads",  ["google ads", "gads"]),
+    ("Tiendanube",  ["tiendanube"]),
+    ("MercadoPago", ["mercadopago", "mp "]),
+    ("Pagonube",    ["pagonube"]),
+    ("Supabase",    ["supabase", "db exec", "db connect"]),
+    ("Google Sheets", ["leer_hoja", "sheets"]),
+]
+
+def _detectar_warnings():
+    warns = []
+    logs = " ".join(l.lower() for l in _log_buffer if "[warn]" in l.lower() or "[error]" in l.lower())
+    for nombre, claves in _FUENTES_WARN:
+        if any(c in logs for c in claves):
+            warns.append(nombre)
+    return warns
+
+
 def _run():
     _estado["corriendo"] = True
     _estado["ultimo_inicio"] = datetime.now(TZ_AR).isoformat()
@@ -69,6 +89,7 @@ def _run():
         sys.stdout = original_stdout
         _estado["corriendo"] = False
         _estado["ultimo_fin"] = datetime.now(TZ_AR).isoformat()
+        _estado["warnings"] = _detectar_warnings()
 
 
 @app.route("/ejecutar", methods=["POST"])
@@ -88,6 +109,7 @@ def ver_estado():
         "ultimo_fin": _estado["ultimo_fin"],
         "resultado": _estado["resultado"],
         "error": _estado["error"],
+        "warnings": _estado["warnings"],
     })
 
 
