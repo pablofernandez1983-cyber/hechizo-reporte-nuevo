@@ -408,6 +408,7 @@ def _stock_compute():
 
     # ── 4. Guardar valuación diaria y obtener mes anterior ────────────────
     valuacion_mes_anterior = None
+    valuacion_historia     = []
     if DATABASE_URL:
         try:
             import psycopg2
@@ -435,6 +436,14 @@ def _stock_compute():
             row = cur2.fetchone()
             if row:
                 valuacion_mes_anterior = float(row[0])
+            cur2.execute("""
+                SELECT TO_CHAR(DATE_TRUNC('month', fecha), 'YYYY-MM') AS mes,
+                       MAX(valuacion_total) AS val
+                FROM stock_valuacion
+                WHERE fecha >= NOW()::date - INTERVAL '13 months'
+                GROUP BY 1 ORDER BY 1
+            """)
+            valuacion_historia = [{"mes": r[0], "val": float(r[1])} for r in cur2.fetchall()]
             conn2.commit()
             cur2.close(); conn2.close()
         except Exception as e:
@@ -449,8 +458,9 @@ def _stock_compute():
         "alertas":               alertas,
         "top20":                 top20,
         "candidatos_liquidar":   candidatos_liquidar,
-        "valuacion_total":       valuacion_total,
-        "valuacion_mes_anterior": valuacion_mes_anterior,
+        "valuacion_total":        valuacion_total,
+        "valuacion_mes_anterior":  valuacion_mes_anterior,
+        "valuacion_historia":      valuacion_historia,
     }
 
 
