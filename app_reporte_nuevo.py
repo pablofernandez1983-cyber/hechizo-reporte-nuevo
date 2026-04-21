@@ -180,11 +180,14 @@ def ver_tokens():
             from datetime import date as _date
             ultimo_dt = datetime.fromisoformat(ultimo).replace(tzinfo=timezone.utc)
             dias_desde = (hoy - ultimo_dt).days
+            # Solo marcar dias_restantes si ya está atrasado o borderline (>=2 días).
+            # Si corrió hoy o ayer, no hay nada que alertar → None evita el banner.
+            dr = (2 - dias_desde) if dias_desde >= 2 else None
             tokens.append({
                 "nombre": "Pagonube (sesión TN)",
                 "valido": dias_desde <= 2,
                 "expira": f"último run: {ultimo_dt.strftime('%d/%m/%Y')}",
-                "dias_restantes": 2 - dias_desde,
+                "dias_restantes": dr,
             })
         else:
             tokens.append({
