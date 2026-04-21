@@ -21,6 +21,27 @@ TN_HEADERS   = {
 app = Flask(__name__)
 CORS(app)
 
+S3_BUCKET   = os.environ.get("AWS_S3_BUCKET_NAME", "")
+S3_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", "")
+S3_REGION   = os.environ.get("AWS_DEFAULT_REGION", "auto")
+S3_KEY_ID   = os.environ.get("AWS_ACCESS_KEY_ID", "")
+S3_SECRET   = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+
+def _s3_leer(key):
+    if not S3_BUCKET: return None
+    try:
+        import boto3
+        from botocore.config import Config
+        s3 = boto3.client("s3", endpoint_url=S3_ENDPOINT,
+                          aws_access_key_id=S3_KEY_ID,
+                          aws_secret_access_key=S3_SECRET,
+                          region_name=S3_REGION,
+                          config=Config(signature_version="s3v4"))
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
+        return json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception:
+        return None
+
 TZ_AR = timezone(timedelta(hours=-3))
 
 _estado = {
@@ -146,32 +167,35 @@ def ver_tokens():
         except Exception as e:
             tokens.append({"nombre": "Meta Ads", "valido": None, "expira": None, "dias_restantes": None, "error": str(e)})
 
-    # ── Tiendanube session (TN_STATE_JSON cookies) ─────────────────
-    tn_state_raw = os.environ.get("TN_STATE_JSON", "")
-    if tn_state_raw:
-        try:
-            state = json.loads(tn_state_raw)
-            cookies = state.get("cookies", [])
-            # Buscar la cookie con menor expiración (ignorar session cookies sin expires)
-            min_expires = None
-            for c in cookies:
-                exp = c.get("expires")
-                if exp and exp > 0:
-                    dt = datetime.fromtimestamp(exp, tz=timezone.utc)
-                    if min_expires is None or dt < min_expires:
-                        min_expires = dt
-            if min_expires:
-                dias = (min_expires - hoy).days
-                tokens.append({
-                    "nombre": "Tiendanube sesión",
-                    "valido": dias > 0,
-                    "expira": min_expires.strftime("%d/%m/%Y"),
-                    "dias_restantes": dias,
-                })
-            else:
-                tokens.append({"nombre": "Tiendanube sesión", "valido": True, "expira": "sin expiración", "dias_restantes": 999})
-        except Exception as e:
-            tokens.append({"nombre": "Tiendanube sesión", "valido": None, "expira": None, "dias_restantes": None, "error": str(e)})
+    # ── Tiendanube / Pagonube — último run exitoso desde S3 ────────
+    try:
+        last_run_data = _s3_leer("pagonube_last_run.json")
+        if last_run_data and isinstance(last_run_data, dict):
+            ultimo = last_run_data.get("ultimo_exito")
+        elif last_run_data and isinstance(last_run_data, list) and last_run_data:
+            ultimo = last_run_data[0].get("ultimo_exito") if isinstance(last_run_data[0], dict) else None
+        else:
+            ultimo = None
+        if ultimo:
+            from datetime import date as _date
+            ultimo_dt = datetime.fromisoformat(ultimo).replace(tzinfo=timezone.utc)
+            dias_desde = (hoy - ultimo_dt).days
+            tokens.append({
+                "nombre": "Pagonube (sesión TN)",
+                "valido": dias_desde <= 2,
+                "expira": f"último run: {ultimo_dt.strftime('%d/%m/%Y')}",
+                "dias_restantes": 2 - dias_desde,
+            })
+        else:
+            tokens.append({
+                "nombre": "Pagonube (sesión TN)",
+                "valido": None,
+                "expira": None,
+                "dias_restantes": None,
+                "error": "sin datos de último run",
+            })
+    except Exception as e:
+        tokens.append({"nombre": "Pagonube (sesión TN)", "valido": None, "expira": None, "dias_restantes": None, "error": str(e)})
 
     return jsonify({"ok": True, "tokens": tokens})
 

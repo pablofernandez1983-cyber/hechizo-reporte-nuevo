@@ -269,6 +269,10 @@ def run():
     if not ok:
         raise RuntimeError("No se pudo subir pagonube.json a S3")
 
+    from datetime import date
+    meta = json.dumps({"ultimo_exito": date.today().isoformat()}).encode("utf-8")
+    subir_a_s3(meta, "pagonube_last_run.json")
+
     print("=" * 55)
     print("COMPLETADO OK")
     print("=" * 55)
