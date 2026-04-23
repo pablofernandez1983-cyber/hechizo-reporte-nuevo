@@ -21,6 +21,9 @@ TN_HEADERS   = {
 app = Flask(__name__)
 CORS(app)
 
+from stock_notifications import notify_bp
+app.register_blueprint(notify_bp)
+
 S3_BUCKET   = os.environ.get("AWS_S3_BUCKET_NAME", "")
 S3_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", "")
 S3_REGION   = os.environ.get("AWS_DEFAULT_REGION", "auto")
