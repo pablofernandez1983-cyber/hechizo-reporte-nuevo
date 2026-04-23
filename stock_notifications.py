@@ -1,16 +1,14 @@
 """
 stock_notifications.py — Blueprint para notificaciones de stock.
-POST /notify upserta en Supabase stock_notifications (conflict: email+variant_id).
+POST /notify upserta en stock_notifications (conflict: email+variant_id).
+Usa DATABASE_URL con psycopg2, igual que el resto de la app.
 """
 
 import os
-from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
-import requests as http
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 ALLOWED_ORIGINS = [
     "https://hechizo.com.ar",
@@ -30,32 +28,29 @@ def notify():
     if missing:
         return jsonify({"error": f"campos requeridos: {', '.join(sorted(missing))}"}), 400
 
-    row = {
-        "email":        body["email"].strip().lower(),
-        "product_id":   int(body["product_id"]),
-        "variant_id":   int(body["variant_id"]),
-        "store_id":     int(body.get("store_id") or 1384618),
-        "product_name": str(body["product_name"])[:255],
-        "variant_name": str(body["variant_name"])[:255],
-        "status":       "pending",
-        "created_at":   datetime.now(timezone.utc).isoformat(),
-    }
+    email        = body["email"].strip().lower()
+    product_id   = int(body["product_id"])
+    variant_id   = int(body["variant_id"])
+    store_id     = int(body.get("store_id") or 1384618)
+    product_name = str(body["product_name"])[:255]
+    variant_name = str(body["variant_name"])[:255]
 
-    headers = {
-        "apikey":        SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type":  "application/json",
-        "Prefer":        "resolution=merge-duplicates,return=representation",
-    }
-
-    resp = http.post(
-        f"{SUPABASE_URL}/rest/v1/stock_notifications",
-        json=row,
-        headers=headers,
-        timeout=10,
-    )
-
-    if not resp.ok:
-        return jsonify({"error": "supabase error", "detail": resp.text[:300]}), 502
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO stock_notifications
+                  (email, product_id, variant_id, store_id, product_name, variant_name, status)
+                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+                ON CONFLICT (email, variant_id)
+                DO UPDATE SET
+                  product_name = EXCLUDED.product_name,
+                  variant_name = EXCLUDED.variant_name,
+                  status       = 'pending'
+            """, (email, product_id, variant_id, store_id, product_name, variant_name))
+        conn.commit()
+    finally:
+        conn.close()
 
     return jsonify({"ok": True}), 200
