@@ -19,7 +19,7 @@ ALLOWED_ORIGINS = [
 
 notify_bp = Blueprint("notify", __name__)
 
-REQUIRED_FIELDS = {"email", "product_id", "variant_id", "store_id", "product_name", "variant_name"}
+REQUIRED_FIELDS = {"email", "product_id", "variant_id", "product_name", "variant_name"}
 
 
 @notify_bp.route("/notify", methods=["POST", "OPTIONS"])
@@ -34,7 +34,7 @@ def notify():
         "email":        body["email"].strip().lower(),
         "product_id":   int(body["product_id"]),
         "variant_id":   int(body["variant_id"]),
-        "store_id":     int(body["store_id"]),
+        "store_id":     int(body.get("store_id") or 1384618),
         "product_name": str(body["product_name"])[:255],
         "variant_name": str(body["variant_name"])[:255],
         "status":       "pending",
