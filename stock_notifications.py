@@ -32,14 +32,13 @@ def notify():
 
     row = {
         "email":        body["email"].strip().lower(),
-        "product_id":   str(body["product_id"]),
-        "variant_id":   str(body["variant_id"]),
-        "store_id":     str(body["store_id"]),
+        "product_id":   int(body["product_id"]),
+        "variant_id":   int(body["variant_id"]),
+        "store_id":     int(body["store_id"]),
         "product_name": str(body["product_name"])[:255],
         "variant_name": str(body["variant_name"])[:255],
         "status":       "pending",
         "created_at":   datetime.now(timezone.utc).isoformat(),
-        "updated_at":   datetime.now(timezone.utc).isoformat(),
     }
 
     headers = {
