@@ -6,7 +6,7 @@ Expone reporte_nuevo.py como endpoint HTTP.
 import os, sys, threading, io, requests, json, time
 from collections import deque
 from datetime import datetime, timezone, timedelta
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from reporte_nuevo import main as ejecutar_reporte
 
@@ -114,6 +114,12 @@ def _run():
         _estado["corriendo"] = False
         _estado["ultimo_fin"] = datetime.now(TZ_AR).isoformat()
         _estado["warnings"] = _detectar_warnings()
+
+
+@app.route("/widget-stock.js")
+def widget_js():
+    return send_from_directory('static', 'widget-stock.js',
+                               mimetype='application/javascript')
 
 
 @app.route("/ejecutar", methods=["POST"])
