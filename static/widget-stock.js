@@ -2,7 +2,8 @@
   if (!window.location.href.includes('test_widget=1')) return;
 
   const ENDPOINT = 'https://hechizo-reporte-nuevo-production.up.railway.app/notify';
-  const STORE_ID = 1384618;
+  const _src = document.currentScript && document.currentScript.src || '';
+  const STORE_ID = parseInt(new URL(_src, location.href).searchParams.get('store_id') || '0');
 
   const style = document.createElement('style');
   style.textContent = `
