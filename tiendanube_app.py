@@ -75,29 +75,4 @@ def callback():
     # 2. Guardar token en DB
     _save_token(store_id, access_token)
 
-    # 3. Registrar widget-stock.js via Scripts API
-    headers = {
-        "Authentication": f"bearer {access_token}",
-        "User-Agent":     USER_AGENT,
-        "Content-Type":   "application/json",
-    }
-    script_resp = http.post(
-        f"https://api.tiendanube.com/2025-03/{store_id}/scripts",
-        json={
-            "script_id":    6218,
-            "query_params": f'{{"store_id": {store_id}}}',
-        },
-        headers=headers,
-        timeout=15,
-    )
-
-    if script_resp.ok:
-        return jsonify({"ok": True, "store_id": store_id, "script": script_resp.json()})
-    else:
-        # Token guardado igual — el script se puede reintentar
-        return jsonify({
-            "ok": False,
-            "store_id": store_id,
-            "warning": "token guardado pero script no registrado",
-            "detail": script_resp.text[:300],
-        }), 207
+    return jsonify({"ok": True, "store_id": store_id})
