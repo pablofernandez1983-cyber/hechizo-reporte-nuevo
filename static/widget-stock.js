@@ -44,25 +44,26 @@
   document.head.appendChild(style);
 
   function getProductData() {
-    const productEl = document.querySelector('[data-product-id]');
-    const productId = productEl ? productEl.getAttribute('data-product-id') : null;
+    const productId = (window.LS && window.LS.product && window.LS.product.id)
+      ? String(window.LS.product.id)
+      : null;
 
-    const variantEl = document.querySelector('input[name="add-to-cart-quantity"]')
-                   || document.querySelector('[data-variant-id]')
-                   || document.querySelector('input[name="id"]');
-    const variantId = variantEl ? (variantEl.getAttribute('data-variant-id') || variantEl.value) : null;
+    const variantEl = document.querySelector('.js-variation-option.selected, .js-variation-option[data-selected], input[name="id"]');
+    const variantId = variantEl
+      ? (variantEl.getAttribute('data-id') || variantEl.getAttribute('data-variation-id') || variantEl.value || productId)
+      : productId;
 
     const nameEl = document.querySelector('h1.product-name, h1, .product-name');
     const productName = nameEl ? nameEl.textContent.trim() : '';
 
-    const variantNameEl = document.querySelector('.product-variants .selected, [data-selected]');
+    const variantNameEl = document.querySelector('.js-variation-option.selected, .js-variation-option[data-selected]');
     const variantName = variantNameEl ? variantNameEl.textContent.trim() : '';
 
     return { productId, variantId, productName, variantName };
   }
 
   function isOutOfStock() {
-    const btn = document.querySelector('input[value="Sin stock"], .btn-add-to-cart[disabled]');
+    const btn = document.querySelector('.js-addtocart.nostock, .js-addtocart[disabled]');
     return btn !== null;
   }
 
@@ -92,7 +93,7 @@
     const { productId, variantId, productName, variantName } = getProductData();
     if (!productId) return;
 
-    const anchor = document.querySelector('.js-product-detail-add-to-cart, form.js-prod-submit-form');
+    const anchor = document.querySelector('form.js-product-form');
     if (!anchor) return;
 
     const widget = buildWidget();
