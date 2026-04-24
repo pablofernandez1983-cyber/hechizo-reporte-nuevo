@@ -84,9 +84,8 @@ def callback():
     script_resp = http.post(
         f"https://api.tiendanube.com/2025-03/{store_id}/scripts",
         json={
-            "src":   f"{WIDGET_URL}?store_id={store_id}",
-            "event": "onfirstinteraction",
-            "where": ["product"],
+            "script_id":    6218,
+            "query_params": f'{{"store_id": {store_id}}}',
         },
         headers=headers,
         timeout=15,
