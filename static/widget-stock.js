@@ -171,36 +171,54 @@
   // ── Página de producto (detail) ───────────────────────────────────────────────
 
   function injectDetailPage() {
-    const noStockBtn = document.querySelector('.js-addtocart.nostock, .js-addtocart[disabled]');
-    if (!noStockBtn) return;
-
     const productId = (window.LS && window.LS.product && window.LS.product.id)
       ? String(window.LS.product.id) : null;
     if (!productId) return;
 
-    const variantEl = document.querySelector('.js-variation-option.selected, .js-variation-option[data-selected], input[name="id"]');
-    const variantId = variantEl
-      ? (variantEl.getAttribute('data-id') || variantEl.getAttribute('data-variation-id') || variantEl.value || productId)
-      : productId;
-
-    const nameEl    = document.querySelector('h1.product-name, h1, .product-name');
-    const productName = nameEl ? nameEl.textContent.trim() : '';
-    const variantNameEl = document.querySelector('.js-variation-option.selected, .js-variation-option[data-selected]');
-    const variantName = variantNameEl ? variantNameEl.textContent.trim() : '';
-    const skuEl = document.querySelector('[data-sku], [itemprop="sku"], .product-sku, .js-sku');
-    const sku = skuEl ? (skuEl.getAttribute('data-sku') || skuEl.getAttribute('content') || skuEl.textContent).trim() : '';
-
     const anchor = document.querySelector('form.js-product-form');
     if (!anchor) return;
 
+    const nameEl = document.querySelector('h1.product-name, h1, .product-name');
+    const productName = nameEl ? nameEl.textContent.trim() : '';
+
+    // Crear el contenedor (oculto por defecto)
     const container = document.createElement('div');
     container.id = 'sn-container';
+    container.style.display = 'none';
     container.innerHTML = `<button id="sn-btn">🔔 Avisame cuando haya stock</button>`;
     anchor.parentNode.insertBefore(container, anchor.nextSibling);
 
-    document.getElementById('sn-btn').addEventListener('click', () =>
-      openModal(productId, variantId, productName, variantName, sku)
-    );
+    document.getElementById('sn-btn').addEventListener('click', function() {
+      const variantEl = document.querySelector('.js-variation-option.selected, .js-variation-option[data-selected], input[name="id"]');
+      const variantId = variantEl
+        ? (variantEl.getAttribute('data-id') || variantEl.getAttribute('data-variation-id') || variantEl.value || productId)
+        : productId;
+      const variantNameEl = document.querySelector('.js-variation-option.selected, .js-variation-option[data-selected]');
+      const variantName = variantNameEl ? variantNameEl.textContent.trim() : '';
+      const skuEl = document.querySelector('[data-sku], [itemprop="sku"], .product-sku, .js-sku');
+      const sku = skuEl ? (skuEl.getAttribute('data-sku') || skuEl.getAttribute('content') || skuEl.textContent).trim() : '';
+      openModal(productId, variantId, productName, variantName, sku);
+    });
+
+    // Observar el botón de compra — cuando se vuelve disabled = variante sin stock
+    const addToCartBtn = document.querySelector('.js-addtocart');
+    if (!addToCartBtn) return;
+
+    function updateVisibility() {
+      const noStock = addToCartBtn.classList.contains('nostock') ||
+                      addToCartBtn.classList.contains('disabled') ||
+                      addToCartBtn.disabled;
+      container.style.display = noStock ? '' : 'none';
+    }
+
+    // Estado inicial
+    updateVisibility();
+
+    // Observar cambios de clase/atributo en el botón de compra
+    new MutationObserver(updateVisibility).observe(addToCartBtn, {
+      attributes: true,
+      attributeFilter: ['class', 'disabled'],
+    });
   }
 
   // ── Páginas de listado ────────────────────────────────────────────────────────
@@ -233,12 +251,12 @@
       let variantId = productId;
 
       if (variants && variants.length > 0) {
-        // Find first out-of-stock variant
-        const outOfStock = variants.find(function(v) {
+        // Only show if ALL variants are out of stock
+        const allOutOfStock = variants.every(function(v) {
           return v.available === false || v.stock === 0;
         });
-        if (!outOfStock) return; // all variants have stock
-        variantId = String(outOfStock.id || productId);
+        if (!allOutOfStock) return;
+        variantId = String(variants[0].id || productId);
       } else {
         // Fallback: check for disabled/nostock addtocart button
         const btn = card.querySelector('.js-addtocart.nostock, .js-addtocart.disabled, .js-addtocart[disabled]');
