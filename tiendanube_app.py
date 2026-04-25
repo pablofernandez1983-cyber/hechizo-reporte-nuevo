@@ -107,14 +107,30 @@ def callback():
 
 
 @tn_bp.route("/tiendanube/setup-webhook")
-def setup_webhook():
+@tn_bp.route("/tiendanube/setup-webhook/<int:store_id>")
+def setup_webhook(store_id=None):
     """
     Registra el webhook product/updated en Tiendanube (idempotente).
     Elimina duplicados si los hay, crea uno solo si no existe.
-    GET /tiendanube/setup-webhook
+    GET /tiendanube/setup-webhook          → usa store de env var
+    GET /tiendanube/setup-webhook/7549940  → usa token de DB para ese store
     """
-    TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
-    TN_TOKEN    = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
+    if store_id:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT access_token FROM tiendanube_tokens WHERE store_id = %s", (store_id,))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return jsonify({"error": f"No hay token para store_id={store_id}"}), 404
+        TN_STORE_ID = str(store_id)
+        TN_TOKEN    = row[0]
+    else:
+        TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
+        TN_TOKEN    = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
 
     if not TN_STORE_ID or not TN_TOKEN:
         return jsonify({"error": "TIENDANUBE_STORE_ID o TIENDANUBE_ACCESS_TOKEN no configurados"}), 500
