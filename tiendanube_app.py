@@ -81,8 +81,8 @@ def callback():
 @tn_bp.route("/tiendanube/setup-webhook")
 def setup_webhook():
     """
-    Registra el webhook product/updated en Tiendanube.
-    Llamar una sola vez desde el navegador para activar las notificaciones automáticas.
+    Registra el webhook product/updated en Tiendanube (idempotente).
+    Elimina duplicados si los hay, crea uno solo si no existe.
     GET /tiendanube/setup-webhook
     """
     TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
@@ -92,20 +92,36 @@ def setup_webhook():
         return jsonify({"error": "TIENDANUBE_STORE_ID o TIENDANUBE_ACCESS_TOKEN no configurados"}), 500
 
     webhook_url = "https://hechizo-reporte-nuevo-production.up.railway.app/notify/webhook"
+    tn_headers  = {
+        "Authentication": f"bearer {TN_TOKEN}",
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/json",
+    }
+    base = f"https://api.tiendanube.com/v1/{TN_STORE_ID}/webhooks"
 
-    resp = http.post(
-        f"https://api.tiendanube.com/v1/{TN_STORE_ID}/webhooks",
-        headers={
-            "Authentication": f"bearer {TN_TOKEN}",
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/json",
-        },
-        json={"event": "product/updated", "url": webhook_url},
-        timeout=15,
-    )
+    # Listar webhooks existentes
+    existing = http.get(base, headers=tn_headers, timeout=15).json()
+    matches  = [w for w in (existing if isinstance(existing, list) else [])
+                if w.get("url") == webhook_url and w.get("event") == "product/updated"]
 
+    deleted = 0
+    kept_id = None
+    for i, w in enumerate(matches):
+        if i == 0:
+            kept_id = w["id"]   # conservar el primero
+        else:
+            http.delete(f"{base}/{w['id']}", headers=tn_headers, timeout=15)
+            deleted += 1
+
+    if kept_id:
+        return jsonify({"ok": True, "msg": f"Webhook ya existía (id={kept_id})", "duplicados_eliminados": deleted})
+
+    # No existía → crear
+    resp = http.post(base, headers=tn_headers,
+                     json={"event": "product/updated", "url": webhook_url}, timeout=15)
     return jsonify({
         "ok":     resp.ok,
-        "status": resp.status_code,
+        "msg":    "Webhook creado",
         "detail": resp.json() if resp.content else {},
+        "duplicados_eliminados": deleted,
     })
