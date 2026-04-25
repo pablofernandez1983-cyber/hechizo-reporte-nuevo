@@ -302,9 +302,60 @@ def check_stock():
         except Exception as e:
             print(f"[CHECK-STOCK] error pid={pid}: {e}", flush=True)
 
-    print(f"[CHECK-STOCK] variant_stock={variant_stock}", flush=True)
+    # tn_product_data: {product_id: {variant_id: stock}}
+    # Necesitamos por producto para el fallback variant_id == product_id
+    tn_product_data = {}
+    for pid in product_ids:
+        try:
+            resp = _req.get(
+                f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products/{pid}",
+                headers=TN_HEADERS(), timeout=10,
+            )
+            print(f"[CHECK-STOCK] product_id={pid} status={resp.status_code}", flush=True)
+            if resp.ok:
+                tn_product_data[pid] = {
+                    var["id"]: int(var.get("stock") or 0)
+                    for var in resp.json().get("variants", [])
+                    if var.get("stock") is not None
+                }
+        except Exception as e:
+            print(f"[CHECK-STOCK] error pid={pid}: {e}", flush=True)
 
-    result = _dispatch_by_stock(variant_stock)
+    print(f"[CHECK-STOCK] tn_product_data={tn_product_data}", flush=True)
+
+    # Determinar qué variant_ids (de nuestra DB) deben recibir notificación
+    to_notify = set()
+    for pending_vid, pending_pid in pendientes:
+        prod_variants = tn_product_data.get(pending_pid, {})
+        if not prod_variants:
+            continue
+        if pending_vid == pending_pid:
+            # El widget guardó product_id como variant_id (sin variantes detectadas)
+            # Notificamos si cualquier variante del producto tiene stock > 0
+            if any(s > 0 for s in prod_variants.values()):
+                to_notify.add(pending_vid)
+        else:
+            if prod_variants.get(pending_vid, 0) > 0:
+                to_notify.add(pending_vid)
+
+    print(f"[CHECK-STOCK] to_notify={to_notify}", flush=True)
+
+    if not to_notify:
+        return jsonify({"ok": True, "enviados": 0, "msg": "Ninguna variante con stock > 0"})
+
+    conn2 = _get_conn()
+    try:
+        with conn2.cursor() as cur:
+            cur.execute("""
+                SELECT id, email, product_name, variant_name
+                FROM stock_notifications
+                WHERE variant_id = ANY(%s) AND status = 'pending'
+            """, (list(to_notify),))
+            pendientes_mail = cur.fetchall()
+    finally:
+        conn2.close()
+
+    result = _send_and_mark(pendientes_mail)
     print(f"[CHECK-STOCK] resultado={result}", flush=True)
     return jsonify({"ok": True, **result})
 
@@ -370,14 +421,41 @@ def notify_webhook():
         print(f"[WEBHOOK] excepcion TN API: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 500
 
-    variant_stock = {
+    prod_variants = {
         var["id"]: int(var.get("stock") or 0)
         for var in product.get("variants", [])
-        if var.get("id") in variant_ids and var.get("stock") is not None
+        if var.get("stock") is not None
     }
-    print(f"[WEBHOOK] variant_stock={variant_stock}", flush=True)
+    print(f"[WEBHOOK] prod_variants={prod_variants}", flush=True)
 
-    result = _dispatch_by_stock(variant_stock)
+    # Fallback: si variant_id == product_id el widget no detectó la variante real
+    to_notify = set()
+    for vid in variant_ids:
+        if vid == product_id:
+            if any(s > 0 for s in prod_variants.values()):
+                to_notify.add(vid)
+        else:
+            if prod_variants.get(vid, 0) > 0:
+                to_notify.add(vid)
+
+    print(f"[WEBHOOK] to_notify={to_notify}", flush=True)
+
+    if not to_notify:
+        return jsonify({"ok": True, "msg": "sin stock en variantes pendientes"}), 200
+
+    conn2 = _get_conn()
+    try:
+        with conn2.cursor() as cur:
+            cur.execute("""
+                SELECT id, email, product_name, variant_name
+                FROM stock_notifications
+                WHERE variant_id = ANY(%s) AND status = 'pending'
+            """, (list(to_notify),))
+            pendientes_mail = cur.fetchall()
+    finally:
+        conn2.close()
+
+    result = _send_and_mark(pendientes_mail)
     print(f"[WEBHOOK] resultado={result}", flush=True)
     return jsonify({"ok": True, **result}), 200
 
