@@ -285,25 +285,9 @@ def check_stock():
     if not pendientes:
         return jsonify({"ok": True, "enviados": 0, "msg": "Sin notificaciones pendientes"})
 
-    product_ids   = list({pid for _, pid in pendientes})
-    variant_stock = {}
+    product_ids = list({pid for _, pid in pendientes})
 
-    for pid in product_ids:
-        try:
-            resp = _req.get(
-                f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products/{pid}",
-                headers=TN_HEADERS(), timeout=10,
-            )
-            print(f"[CHECK-STOCK] product_id={pid} status={resp.status_code}", flush=True)
-            if resp.ok:
-                for var in resp.json().get("variants", []):
-                    if var.get("stock") is not None:
-                        variant_stock[var["id"]] = int(var["stock"])
-        except Exception as e:
-            print(f"[CHECK-STOCK] error pid={pid}: {e}", flush=True)
-
-    # tn_product_data: {product_id: {variant_id: stock}}
-    # Necesitamos por producto para el fallback variant_id == product_id
+    # {product_id: {variant_id: stock}} — keyed by product for fallback when vid==pid
     tn_product_data = {}
     for pid in product_ids:
         try:
