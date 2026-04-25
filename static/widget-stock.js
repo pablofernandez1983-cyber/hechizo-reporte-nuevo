@@ -221,7 +221,6 @@
   }
 
   function injectListingPage() {
-    // Strategy 1: iterate product cards via data-product-id (works in Atlantico, Recife, most TN themes)
     const cards = document.querySelectorAll('.js-item-product[data-product-id], [data-product-id].item-product');
 
     cards.forEach(function(card) {
@@ -230,25 +229,20 @@
       const productId = card.dataset.productId;
       if (!productId) return;
 
-      // Check if out of stock via data-variants JSON
       const variants = _parseVariants(card);
-      let isOutOfStock = false;
       let variantId = productId;
 
       if (variants && variants.length > 0) {
-        // If ALL variants have no stock, show button
-        const allOutOfStock = variants.every(function(v) {
-          return v.available === false || v.stock === 0 || (!v.available && v.stock !== null);
+        // Find first out-of-stock variant
+        const outOfStock = variants.find(function(v) {
+          return v.available === false || v.stock === 0;
         });
-        if (!allOutOfStock) return; // has stock, skip
-
-        isOutOfStock = true;
-        variantId = String(variants[0].id || productId);
+        if (!outOfStock) return; // all variants have stock
+        variantId = String(outOfStock.id || productId);
       } else {
         // Fallback: check for disabled/nostock addtocart button
         const btn = card.querySelector('.js-addtocart.nostock, .js-addtocart.disabled, .js-addtocart[disabled]');
         if (!btn) return;
-        isOutOfStock = true;
         variantId =
           btn.dataset.variantId ||
           btn.dataset.itemId ||
@@ -256,7 +250,6 @@
           productId;
       }
 
-      if (!isOutOfStock) return;
       card.dataset.snInjected = '1';
 
       const productName =
@@ -268,18 +261,25 @@
       notifyBtn.className = 'sn-listing-btn';
       notifyBtn.textContent = '🔔 Avisame cuando haya stock';
 
-      // Insert after product name, or at end of card
+      notifyBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openModal(productId, variantId, productName, '', sku);
+      });
+
+      // Inject into NubeSDK slot if available (same approach as other TN apps)
+      const slot = card.querySelector('.js-nubesdk-slot[data-nubesdk-slot="after_product_grid_item_name"]');
+      if (slot) {
+        slot.appendChild(notifyBtn);
+        return;
+      }
+      // Fallback: after product name element
       const nameEl = card.querySelector('.js-item-name, [itemprop="name"], .item-name, .product-name');
       if (nameEl && nameEl.parentNode) {
         nameEl.parentNode.insertBefore(notifyBtn, nameEl.nextSibling);
       } else {
         card.appendChild(notifyBtn);
       }
-
-      notifyBtn.addEventListener('click', function(e) {
-        e.preventDefault();
-        openModal(productId, variantId, productName, '', sku);
-      });
     });
   }
 
