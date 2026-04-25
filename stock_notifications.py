@@ -338,16 +338,18 @@ def check_stock():
         prod_variants = tn_product_data.get(pending_pid, {})
         if not prod_variants:
             continue
-        if pending_vid == pending_pid:
-            # Widget guardó product_id como variant_id → notificar si cualquier variante tiene stock
+        # Primero intentar la variante exacta
+        exact_stock = prod_variants.get(pending_vid)
+        if exact_stock is not None and exact_stock > 0:
+            stock_debug[pending_vid] = exact_stock
+            to_notify.add(pending_vid)
+        else:
+            # Si la variante exacta tiene 0 o no existe (ID obsoleto),
+            # notificar si cualquier variante del producto tiene stock > 0.
+            # Cubre productos sin variantes y casos donde TN rotó el variant_id.
             best = max(prod_variants.values(), default=0)
             stock_debug[pending_vid] = best
             if best > 0:
-                to_notify.add(pending_vid)
-        else:
-            s = prod_variants.get(pending_vid, 0)
-            stock_debug[pending_vid] = s
-            if s > 0:
                 to_notify.add(pending_vid)
 
     print(f"[CHECK-STOCK] stock_debug={stock_debug} to_notify={to_notify}", flush=True)
@@ -444,15 +446,14 @@ def notify_webhook():
     }
     print(f"[WEBHOOK] prod_variants={prod_variants}", flush=True)
 
-    # Fallback: si variant_id == product_id el widget no detectó la variante real
     to_notify = set()
     for vid in variant_ids:
-        if vid == product_id:
-            if any(s > 0 for s in prod_variants.values()):
-                to_notify.add(vid)
-        else:
-            if prod_variants.get(vid, 0) > 0:
-                to_notify.add(vid)
+        exact = prod_variants.get(vid)
+        if exact is not None and exact > 0:
+            to_notify.add(vid)
+        elif max(prod_variants.values(), default=0) > 0:
+            # Variante exacta sin stock o ID obsoleto → notificar si cualquier variante del producto tiene stock
+            to_notify.add(vid)
 
     print(f"[WEBHOOK] to_notify={to_notify}", flush=True)
 
