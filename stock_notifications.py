@@ -17,6 +17,7 @@ import hmac
 import hashlib
 import base64
 import smtplib
+import threading
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from flask import Blueprint, jsonify, request
@@ -62,7 +63,7 @@ def _ensure_columns():
         pass
 
 
-_ensure_columns()
+threading.Thread(target=_ensure_columns, daemon=True).start()
 
 
 # ── POST /notify ───────────────────────────────────────────────────────────────
