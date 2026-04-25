@@ -73,8 +73,15 @@ _STORE_DOMAINS = {
 }
 
 def _product_url(store_id, handle):
+    from urllib.parse import quote
     domain = _STORE_DOMAINS.get(int(store_id or 0))
     if not domain or not handle:
+        return None
+    # TN sometimes returns handle as {"es": "slug"} localized object
+    if isinstance(handle, dict):
+        handle = handle.get("es") or next(iter(handle.values()), "")
+    handle = quote(str(handle).strip(), safe="-_.")
+    if not handle:
         return None
     return f"https://{domain}/productos/{handle}"
 
@@ -764,8 +771,10 @@ def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
     if variant_name and variant_name not in ("-", ""):
         nombre_completo += f" — {variant_name}"
 
-    link = product_url or "https://hechizo.com.ar"
-    subject = f"¡{product_name} volvió a tener stock!"
+    from html import escape as _hesc
+    link     = product_url or "https://hechizo.com.ar"
+    link_safe = _hesc(link)
+    subject  = f"¡{product_name} volvió a tener stock!"
 
     html = f"""<!DOCTYPE html>
 <html lang="es">
@@ -789,7 +798,7 @@ def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
               <strong>{nombre_completo}</strong>. ¡Ya está disponible!
             </p>
             <div style="text-align:center;margin:28px 0">
-              <a href="{link}"
+              <a href="{link_safe}"
                  style="display:inline-block;background:#1a1a1a;color:#fff;
                         padding:14px 36px;text-decoration:none;border-radius:4px;
                         font-size:14px;font-weight:bold;letter-spacing:.3px">
@@ -798,7 +807,7 @@ def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
             </div>
             <p style="font-size:13px;color:#999;margin:24px 0 0;line-height:1.6;border-top:1px solid #eee;padding-top:20px">
               Recibiste este mensaje porque lo solicitaste en
-              <a href="https://hechizo.com.ar" style="color:#666">hechizo.com.ar</a>.
+              <a href="https://hechizo.com.ar" style="color:#e879a0">hechizo.com.ar</a>.
               <br>Si no lo solicitaste, podés ignorar este email.
             </p>
           </td>
