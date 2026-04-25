@@ -15,19 +15,11 @@ Endpoints:
 """
 
 import os
-import hmac
-import hashlib
-import base64
-import smtplib
 import threading
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
 
-DATABASE_URL   = os.environ.get("DATABASE_URL", "")
-GMAIL_USER     = os.environ.get("GMAIL_USER", "")
-GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASSWORD", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 WIDGET_ORIGINS = [
     "https://hechizo.com.ar",
@@ -626,8 +618,11 @@ def _send_and_mark(pendientes: list) -> dict:
 # ── Email ──────────────────────────────────────────────────────────────────────
 
 def _send_restock_email(to_addr, product_name, variant_name):
-    if not GMAIL_USER or not GMAIL_APP_PASS:
-        raise RuntimeError("GMAIL_USER o GMAIL_APP_PASSWORD no configurados en Railway")
+    import requests as _req
+
+    RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+    if not RESEND_API_KEY:
+        raise RuntimeError("RESEND_API_KEY no configurado en Railway")
 
     nombre_completo = product_name
     if variant_name and variant_name not in ("-", ""):
@@ -676,12 +671,16 @@ def _send_restock_email(to_addr, product_name, variant_name):
 </body>
 </html>"""
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = f"Hechizo Bijou <{GMAIL_USER}>"
-    msg["To"]      = to_addr
-    msg.attach(MIMEText(html, "html", "utf-8"))
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
-        smtp.login(GMAIL_USER, GMAIL_APP_PASS)
-        smtp.sendmail(GMAIL_USER, to_addr, msg.as_bytes())
+    resp = _req.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+        json={
+            "from":    "Hechizo Bijou <notificaciones@hechizobijou.com.ar>",
+            "to":      [to_addr],
+            "subject": subject,
+            "html":    html,
+        },
+        timeout=15,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Resend error {resp.status_code}: {resp.text[:200]}")
