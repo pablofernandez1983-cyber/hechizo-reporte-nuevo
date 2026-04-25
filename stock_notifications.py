@@ -67,6 +67,36 @@ def _get_conn():
     return psycopg2.connect(DATABASE_URL, connect_timeout=10)
 
 
+_STORE_DOMAINS = {
+    1384618: "hechizo.com.ar",
+    7549940: "pruebasdehechizo.mitiendanube.com",
+}
+
+def _product_url(store_id, handle):
+    domain = _STORE_DOMAINS.get(int(store_id or 0))
+    if not domain or not handle:
+        return None
+    return f"https://{domain}/productos/{handle}"
+
+
+def _fill_product_url(product_id, url):
+    """Rellena product_url NULL en registros pendientes de ese producto."""
+    if not url:
+        return
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE stock_notifications
+                SET product_url = %s
+                WHERE product_id = %s AND status = 'pending' AND product_url IS NULL
+            """, (url, product_id))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def _ensure_columns():
     if not DATABASE_URL:
         return
@@ -358,11 +388,13 @@ def check_stock():
                 if resp.status_code == 404:
                     not_found_pids.append(pid)
                 elif resp.ok:
+                    pdata = resp.json()
                     variant_map = {}
-                    for var in resp.json().get("variants", []):
+                    for var in pdata.get("variants", []):
                         s = var.get("stock")
                         variant_map[var["id"]] = 999 if s is None else int(s)
                     tn_product_data[pid] = variant_map
+                    _fill_product_url(pid, _product_url(sid, pdata.get("handle")))
                     print(f"[CHECK-STOCK] product_id={pid} variants={variant_map}", flush=True)
             except Exception as e:
                 print(f"[CHECK-STOCK] error pid={pid}: {e}", flush=True)
@@ -494,6 +526,10 @@ def notify_webhook():
     except Exception as e:
         print(f"[WEBHOOK] excepcion TN API: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 500
+
+    # Rellenar product_url en registros que no la tienen
+    handle = product.get("handle")
+    _fill_product_url(product_id, _product_url(store_id, handle))
 
     # stock=None en TN = sin gestión de stock = siempre disponible → 999
     prod_variants = {
@@ -740,8 +776,9 @@ def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
       <table width="520" cellpadding="0" cellspacing="0"
              style="background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
         <tr>
-          <td style="background:#1a1a1a;padding:20px 32px">
-            <span style="color:#fff;font-size:20px;font-weight:bold;letter-spacing:.5px">Hechizo</span>
+          <td style="background:linear-gradient(135deg,#2d0a1a 0%,#1a0510 100%);padding:24px 32px;text-align:center">
+            <span style="font-family:Georgia,'Times New Roman',serif;color:#f0a0b8;font-size:26px;font-weight:normal;letter-spacing:3px;text-transform:uppercase">Hechizo</span>
+            <div style="width:40px;height:1px;background:linear-gradient(90deg,transparent,#e879a0,transparent);margin:8px auto 0"></div>
           </td>
         </tr>
         <tr>
