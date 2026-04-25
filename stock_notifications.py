@@ -117,7 +117,7 @@ def notify_list():
     try:
         with conn.cursor() as cur:
             sql = """
-                SELECT id, email, product_name, variant_name, status,
+                SELECT id, email, product_id, variant_id, product_name, variant_name, status,
                        created_at, sent_at
                 FROM stock_notifications
                 WHERE 1=1
@@ -459,6 +459,27 @@ def notify_delete(notif_id):
     finally:
         conn.close()
     return jsonify({"ok": True})
+
+
+# ── DELETE /notify/variant/<variant_id>  (bulk discard) ───────────────────────
+
+@notify_bp.route("/notify/variant/<int:variant_id>", methods=["DELETE", "OPTIONS"])
+@cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type"])
+def notify_delete_variant(variant_id):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM stock_notifications WHERE variant_id = %s AND status = 'pending'",
+                (variant_id,),
+            )
+            deleted = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "eliminados": deleted})
 
 
 # ── Helpers internos ───────────────────────────────────────────────────────────
