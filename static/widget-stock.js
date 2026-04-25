@@ -205,47 +205,76 @@
 
   // ── Páginas de listado ────────────────────────────────────────────────────────
 
+  function _parseVariants(card) {
+    // TN themes put variant JSON in data-variants on .js-quickshop-container or .js-product-container
+    const containers = card.querySelectorAll('[data-variants]');
+    for (const el of containers) {
+      try {
+        const raw = el.getAttribute('data-variants');
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        // data-variants can be an object (single variant) or array
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch (e) { /* ignore */ }
+    }
+    return null;
+  }
+
   function injectListingPage() {
-    // Busca todos los botones nostock en la página (listados tienen muchos)
-    const noStockBtns = document.querySelectorAll('.js-addtocart.nostock, .js-addtocart[disabled]');
-    if (noStockBtns.length === 0) return;
+    // Strategy 1: iterate product cards via data-product-id (works in Atlantico, Recife, most TN themes)
+    const cards = document.querySelectorAll('.js-item-product[data-product-id], [data-product-id].item-product');
 
-    noStockBtns.forEach(function(btn) {
-      // No inyectar dos veces
-      if (btn.dataset.snInjected) return;
-      btn.dataset.snInjected = '1';
+    cards.forEach(function(card) {
+      if (card.dataset.snInjected) return;
 
-      // Subir al contenedor del producto
-      const card = btn.closest('[data-product-id], [data-item], .item, li, article') || btn.parentElement;
-
-      // Obtener product_id — TN lo pone en varios lugares según el tema
-      const productId =
-        card.dataset.productId ||
-        btn.dataset.productId ||
-        btn.dataset.itemId ||
-        btn.closest('form[data-product-id]')?.dataset.productId ||
-        btn.closest('[data-item-id]')?.dataset.itemId ||
-        null;
-
+      const productId = card.dataset.productId;
       if (!productId) return;
 
-      // variant_id: intentar obtenerlo, sino usar product_id (sin variantes)
-      const variantId =
-        btn.dataset.variantId ||
-        btn.dataset.itemId ||
-        card.querySelector('input[name="id"]')?.value ||
-        productId;
+      // Check if out of stock via data-variants JSON
+      const variants = _parseVariants(card);
+      let isOutOfStock = false;
+      let variantId = productId;
+
+      if (variants && variants.length > 0) {
+        // If ALL variants have no stock, show button
+        const allOutOfStock = variants.every(function(v) {
+          return v.available === false || v.stock === 0 || (!v.available && v.stock !== null);
+        });
+        if (!allOutOfStock) return; // has stock, skip
+
+        isOutOfStock = true;
+        variantId = String(variants[0].id || productId);
+      } else {
+        // Fallback: check for disabled/nostock addtocart button
+        const btn = card.querySelector('.js-addtocart.nostock, .js-addtocart.disabled, .js-addtocart[disabled]');
+        if (!btn) return;
+        isOutOfStock = true;
+        variantId =
+          btn.dataset.variantId ||
+          btn.dataset.itemId ||
+          card.querySelector('input[name="id"]')?.value ||
+          productId;
+      }
+
+      if (!isOutOfStock) return;
+      card.dataset.snInjected = '1';
 
       const productName =
-        card.querySelector('[itemprop="name"], h2, h3, .item-name, .product-name, .js-item-name')?.textContent.trim() || '';
+        card.querySelector('.js-item-name, [itemprop="name"], h2, h3, .item-name, .product-name')?.textContent.trim() || '';
 
       const sku = getSkuFromEl(card);
 
-      // Crear botón
       const notifyBtn = document.createElement('button');
       notifyBtn.className = 'sn-listing-btn';
       notifyBtn.textContent = '🔔 Avisame cuando haya stock';
-      btn.parentNode.insertBefore(notifyBtn, btn.nextSibling);
+
+      // Insert after product name, or at end of card
+      const nameEl = card.querySelector('.js-item-name, [itemprop="name"], .item-name, .product-name');
+      if (nameEl && nameEl.parentNode) {
+        nameEl.parentNode.insertBefore(notifyBtn, nameEl.nextSibling);
+      } else {
+        card.appendChild(notifyBtn);
+      }
 
       notifyBtn.addEventListener('click', function(e) {
         e.preventDefault();
