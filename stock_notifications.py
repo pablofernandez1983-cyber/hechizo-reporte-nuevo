@@ -617,12 +617,29 @@ def _send_and_mark(pendientes: list) -> dict:
 
 # ── Email ──────────────────────────────────────────────────────────────────────
 
+def _get_gmail_access_token():
+    import requests as _req
+    client_id     = os.environ.get("GMAIL_CLIENT_ID", "")
+    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "")
+    refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN", "")
+    if not all([client_id, client_secret, refresh_token]):
+        raise RuntimeError("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN no configurados")
+    resp = _req.post("https://oauth2.googleapis.com/token", data={
+        "client_id":     client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type":    "refresh_token",
+    }, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(f"Error obteniendo access token: {resp.text[:200]}")
+    return resp.json()["access_token"]
+
+
 def _send_restock_email(to_addr, product_name, variant_name):
     import requests as _req
-
-    RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-    if not RESEND_API_KEY:
-        raise RuntimeError("RESEND_API_KEY no configurado en Railway")
+    import base64 as _b64
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
 
     nombre_completo = product_name
     if variant_name and variant_name not in ("-", ""):
@@ -671,16 +688,21 @@ def _send_restock_email(to_addr, product_name, variant_name):
 </body>
 </html>"""
 
+    gmail_user = os.environ.get("GMAIL_USER", "hechizobijou@gmail.com")
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = f"Hechizo Bijou <{gmail_user}>"
+    msg["To"]      = to_addr
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    raw = _b64.urlsafe_b64encode(msg.as_bytes()).decode()
+    access_token = _get_gmail_access_token()
+
     resp = _req.post(
-        "https://api.resend.com/emails",
-        headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-        json={
-            "from":    "Hechizo Bijou <notificaciones@hechizobijou.com.ar>",
-            "to":      [to_addr],
-            "subject": subject,
-            "html":    html,
-        },
+        f"https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        json={"raw": raw},
         timeout=15,
     )
     if not resp.ok:
-        raise RuntimeError(f"Resend error {resp.status_code}: {resp.text[:200]}")
+        raise RuntimeError(f"Gmail API error {resp.status_code}: {resp.text[:200]}")
