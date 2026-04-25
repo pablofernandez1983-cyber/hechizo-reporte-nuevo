@@ -47,6 +47,26 @@ def install():
     return redirect(url)
 
 
+@tn_bp.route("/tiendanube/list-webhooks/<int:store_id>")
+def list_webhooks(store_id):
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT access_token FROM tiendanube_tokens WHERE store_id = %s", (store_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": f"No hay token para store_id={store_id}"}), 404
+    resp = http.get(
+        f"https://api.tiendanube.com/v1/{store_id}/webhooks",
+        headers={"Authentication": f"bearer {row[0]}", "User-Agent": USER_AGENT},
+        timeout=10,
+    )
+    return jsonify(resp.json())
+
+
 @tn_bp.route("/tiendanube/test-token/<int:store_id>")
 def test_token(store_id):
     """Prueba el token guardado para un store_id — devuelve nombre de la tienda."""
