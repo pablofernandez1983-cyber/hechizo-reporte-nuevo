@@ -47,6 +47,59 @@ def install():
     return redirect(url)
 
 
+@tn_bp.route("/tiendanube/list-scripts/<int:store_id>")
+def list_scripts(store_id):
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT access_token FROM tiendanube_tokens WHERE store_id = %s", (store_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": f"No hay token para store_id={store_id}"}), 404
+    resp = http.get(
+        f"https://api.tiendanube.com/v1/{store_id}/scripts",
+        headers={"Authentication": f"bearer {row[0]}", "User-Agent": USER_AGENT},
+        timeout=10,
+    )
+    return jsonify(resp.json())
+
+
+@tn_bp.route("/tiendanube/setup-script/<int:store_id>")
+def setup_script(store_id):
+    """Registra widget-stock.js en el store via Scripts API (idempotente)."""
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT access_token FROM tiendanube_tokens WHERE store_id = %s", (store_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": f"No hay token para store_id={store_id}"}), 404
+
+    token = row[0]
+    headers = {"Authentication": f"bearer {token}", "User-Agent": USER_AGENT, "Content-Type": "application/json"}
+    base = f"https://api.tiendanube.com/v1/{store_id}/scripts"
+
+    existing = http.get(base, headers=headers, timeout=10).json()
+    matches = [s for s in (existing if isinstance(existing, list) else [])
+               if s.get("src") == WIDGET_URL]
+
+    if matches:
+        return jsonify({"ok": True, "msg": f"Script ya registrado (id={matches[0]['id']})", "scripts": matches})
+
+    resp = http.post(base, headers=headers, json={
+        "src": WIDGET_URL,
+        "event": "onload",
+        "where": "store",
+    }, timeout=10)
+    return jsonify({"ok": resp.ok, "msg": "Script registrado", "detail": resp.json() if resp.content else {}})
+
+
 @tn_bp.route("/tiendanube/list-webhooks/<int:store_id>")
 def list_webhooks(store_id):
     import psycopg2
