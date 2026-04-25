@@ -180,11 +180,12 @@ def notify_products():
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT variant_id, product_id, product_name, variant_name,
-                       COUNT(*) AS cantidad
+                SELECT product_id, product_name,
+                       COUNT(*) AS cantidad,
+                       array_agg(DISTINCT variant_id) AS variant_ids
                 FROM stock_notifications
                 WHERE status = 'pending'
-                GROUP BY variant_id, product_id, product_name, variant_name
+                GROUP BY product_id, product_name
                 ORDER BY cantidad DESC
             """)
             cols = [d[0] for d in cur.description]
@@ -192,11 +193,43 @@ def notify_products():
     finally:
         conn.close()
 
-    _enrich_with_stock(rows)
+    _enrich_with_stock_product(rows)
     for r in rows:
-        r["cantidad"] = int(r["cantidad"])
+        r["cantidad"]    = int(r["cantidad"])
+        r["variant_ids"] = list(r["variant_ids"])
 
     return jsonify({"ok": True, "items": rows})
+
+
+def _enrich_with_stock_product(rows):
+    """Enriquece filas agrupadas por product_id con stock mínimo de sus variantes."""
+    import requests as _req
+    if not rows:
+        return
+    product_ids = list({r["product_id"] for r in rows})
+    product_stock = {}  # product_id -> min stock across variants
+
+    for pid in product_ids:
+        store_id = os.environ.get("TIENDANUBE_STORE_ID", "")
+        if not store_id:
+            product_stock[pid] = None
+            continue
+        try:
+            resp = _req.get(
+                f"https://api.tiendanube.com/v1/{store_id}/products/{pid}",
+                headers=_tn_headers(store_id), timeout=10,
+            )
+            if resp.ok:
+                stocks = [v.get("stock") for v in resp.json().get("variants", [])]
+                stocks = [s for s in stocks if s is not None]
+                product_stock[pid] = min(stocks) if stocks else None
+            else:
+                product_stock[pid] = None
+        except Exception:
+            product_stock[pid] = None
+
+    for r in rows:
+        r["current_stock"] = product_stock.get(r["product_id"])
 
 
 def _enrich_with_stock(rows):
@@ -498,6 +531,51 @@ def notify_webhook():
     result = _send_and_mark(pendientes_mail)
     print(f"[WEBHOOK] resultado={result}", flush=True)
     return jsonify({"ok": True, **result}), 200
+
+
+# ── POST /notify/send-product/<product_id>  (manual por producto) ────────────
+
+@notify_bp.route("/notify/send-product/<int:product_id>", methods=["POST", "OPTIONS"])
+@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
+def notify_send_product(product_id):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, email, product_name, variant_name, product_url
+                FROM stock_notifications
+                WHERE product_id = %s AND status = 'pending'
+            """, (product_id,))
+            pendientes = cur.fetchall()
+    finally:
+        conn.close()
+    if not pendientes:
+        return jsonify({"ok": True, "enviados": 0, "msg": "Sin notificaciones pendientes"})
+    result = _send_and_mark(pendientes)
+    return jsonify({"ok": True, **result})
+
+
+# ── DELETE /notify/product/<product_id>  (bulk discard por producto) ──────────
+
+@notify_bp.route("/notify/product/<int:product_id>", methods=["DELETE", "OPTIONS"])
+@cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type"])
+def notify_delete_product(product_id):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE stock_notifications SET status = 'canceled' WHERE product_id = %s AND status = 'pending'",
+                (product_id,),
+            )
+            canceled = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "eliminados": canceled})
 
 
 # ── DELETE /notify/<notif_id>  (soft cancel) ──────────────────────────────────
