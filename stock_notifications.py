@@ -9,7 +9,9 @@ Endpoints:
   POST   /notify/send/<variant_id>    — envía mails y marca como enviado (manual)
   POST   /notify/check-stock          — chequea TN API y envía pendientes con stock > 0
   POST   /notify/webhook              — recibe webhooks product/updated de Tiendanube
-  DELETE /notify/<notif_id>           — elimina una notificación
+  DELETE /notify/<notif_id>           — cancela una notificación (soft delete)
+  POST   /notify/<notif_id>/restore   — restaura una notificación cancelada a pending
+  DELETE /notify/variant/<variant_id> — cancela en bulk todas las pending de una variante
 """
 
 import os
@@ -57,6 +59,7 @@ def _ensure_columns():
         with conn.cursor() as cur:
             cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ")
             cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")
+            cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS sku VARCHAR(100)")
         conn.commit()
         conn.close()
     except Exception:
@@ -82,21 +85,23 @@ def notify():
     store_id     = int(body.get("store_id") or 1384618)
     product_name = str(body["product_name"])[:255]
     variant_name = str(body["variant_name"])[:255]
+    sku          = str(body.get("sku") or "")[:100] or None
 
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO stock_notifications
-                  (email, product_id, variant_id, store_id, product_name, variant_name, status)
-                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+                  (email, product_id, variant_id, store_id, product_name, variant_name, sku, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
                 ON CONFLICT (email, variant_id)
                 DO UPDATE SET
                   product_name = EXCLUDED.product_name,
                   variant_name = EXCLUDED.variant_name,
+                  sku          = COALESCE(EXCLUDED.sku, stock_notifications.sku),
                   status       = 'pending',
                   sent_at      = NULL
-            """, (email, product_id, variant_id, store_id, product_name, variant_name))
+            """, (email, product_id, variant_id, store_id, product_name, variant_name, sku))
         conn.commit()
     finally:
         conn.close()
@@ -117,7 +122,7 @@ def notify_list():
     try:
         with conn.cursor() as cur:
             sql = """
-                SELECT id, email, product_id, variant_id, product_name, variant_name, status,
+                SELECT id, email, product_id, variant_id, product_name, variant_name, sku, status,
                        created_at, sent_at
                 FROM stock_notifications
                 WHERE 1=1
@@ -130,7 +135,7 @@ def notify_list():
                 sql += " AND (LOWER(product_name) LIKE %s OR LOWER(variant_name) LIKE %s)"
                 params.append(f"%{product_q}%")
                 params.append(f"%{product_q}%")
-            if status_q in ("pending", "sent"):
+            if status_q in ("pending", "sent", "canceled"):
                 sql += " AND status = %s"
                 params.append(status_q)
             sql += " ORDER BY created_at DESC LIMIT 500"
@@ -444,7 +449,7 @@ def notify_webhook():
     return jsonify({"ok": True, **result}), 200
 
 
-# ── DELETE /notify/<notif_id> ──────────────────────────────────────────────────
+# ── DELETE /notify/<notif_id>  (soft cancel) ──────────────────────────────────
 
 @notify_bp.route("/notify/<int:notif_id>", methods=["DELETE", "OPTIONS"])
 @cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type"])
@@ -454,7 +459,30 @@ def notify_delete(notif_id):
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM stock_notifications WHERE id = %s", (notif_id,))
+            cur.execute(
+                "UPDATE stock_notifications SET status = 'canceled' WHERE id = %s",
+                (notif_id,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
+# ── POST /notify/<notif_id>/restore ───────────────────────────────────────────
+
+@notify_bp.route("/notify/<int:notif_id>/restore", methods=["POST", "OPTIONS"])
+@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
+def notify_restore(notif_id):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE stock_notifications SET status = 'pending', sent_at = NULL WHERE id = %s AND status = 'canceled'",
+                (notif_id,),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -472,14 +500,14 @@ def notify_delete_variant(variant_id):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM stock_notifications WHERE variant_id = %s AND status = 'pending'",
+                "UPDATE stock_notifications SET status = 'canceled' WHERE variant_id = %s AND status = 'pending'",
                 (variant_id,),
             )
-            deleted = cur.rowcount
+            canceled = cur.rowcount
         conn.commit()
     finally:
         conn.close()
-    return jsonify({"ok": True, "eliminados": deleted})
+    return jsonify({"ok": True, "eliminados": canceled})
 
 
 # ── Helpers internos ───────────────────────────────────────────────────────────

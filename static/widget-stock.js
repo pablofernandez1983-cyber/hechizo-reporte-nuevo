@@ -59,7 +59,10 @@
     const variantNameEl = document.querySelector('.js-variation-option.selected, .js-variation-option[data-selected]');
     const variantName = variantNameEl ? variantNameEl.textContent.trim() : '';
 
-    return { productId, variantId, productName, variantName };
+    const skuEl = document.querySelector('[data-sku], [itemprop="sku"], .product-sku, .js-sku');
+    const sku = skuEl ? (skuEl.getAttribute('data-sku') || skuEl.getAttribute('content') || skuEl.textContent).trim() : '';
+
+    return { productId, variantId, productName, variantName, sku };
   }
 
   function isOutOfStock() {
@@ -90,7 +93,7 @@
   function inject() {
     if (!isOutOfStock()) return;
 
-    const { productId, variantId, productName, variantName } = getProductData();
+    const { productId, variantId, productName, variantName, sku } = getProductData();
     if (!productId) return;
 
     const anchor = document.querySelector('form.js-product-form');
@@ -147,6 +150,7 @@
             store_id:     STORE_ID,
             product_name: productName,
             variant_name: variantName,
+            sku:          sku || undefined,
           })
         });
 
