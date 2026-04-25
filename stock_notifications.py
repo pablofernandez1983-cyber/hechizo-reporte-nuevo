@@ -682,8 +682,6 @@ def _send_restock_email(to_addr, product_name, variant_name):
     msg["To"]      = to_addr
     msg.attach(MIMEText(html, "html", "utf-8"))
 
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
-        smtp.ehlo()
-        smtp.starttls()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
         smtp.login(GMAIL_USER, GMAIL_APP_PASS)
         smtp.sendmail(GMAIL_USER, to_addr, msg.as_bytes())
