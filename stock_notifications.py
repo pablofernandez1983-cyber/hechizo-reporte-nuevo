@@ -290,9 +290,11 @@ def check_stock():
     if not pendientes:
         return jsonify({"ok": True, "enviados": 0, "msg": "Sin notificaciones pendientes"})
 
-    product_ids = list({pid for _, pid in pendientes})
+    product_ids   = list({pid for _, pid in pendientes})
+    not_found_pids = []
 
-    # {product_id: {variant_id: stock}} — keyed by product for fallback when vid==pid
+    # {product_id: {variant_id: stock}}
+    # stock=None en TN significa "sin gestión de stock" → siempre disponible → se trata como 999
     tn_product_data = {}
     for pid in product_ids:
         try:
@@ -301,36 +303,61 @@ def check_stock():
                 headers=TN_HEADERS(), timeout=10,
             )
             print(f"[CHECK-STOCK] product_id={pid} status={resp.status_code}", flush=True)
-            if resp.ok:
-                tn_product_data[pid] = {
-                    var["id"]: int(var.get("stock") or 0)
-                    for var in resp.json().get("variants", [])
-                    if var.get("stock") is not None
-                }
+            if resp.status_code == 404:
+                not_found_pids.append(pid)
+            elif resp.ok:
+                variant_map = {}
+                for var in resp.json().get("variants", []):
+                    s = var.get("stock")
+                    variant_map[var["id"]] = 999 if s is None else int(s)
+                tn_product_data[pid] = variant_map
+                print(f"[CHECK-STOCK] product_id={pid} variants={variant_map}", flush=True)
         except Exception as e:
             print(f"[CHECK-STOCK] error pid={pid}: {e}", flush=True)
 
-    print(f"[CHECK-STOCK] tn_product_data={tn_product_data}", flush=True)
+    # Limpiar productos que ya no existen en TN
+    if not_found_pids:
+        try:
+            conn_clean = _get_conn()
+            with conn_clean.cursor() as cur:
+                cur.execute(
+                    "UPDATE stock_notifications SET status = 'canceled' WHERE product_id = ANY(%s) AND status = 'pending'",
+                    (not_found_pids,),
+                )
+                cleaned = cur.rowcount
+            conn_clean.commit()
+            conn_clean.close()
+            print(f"[CHECK-STOCK] canceladas {cleaned} notificaciones de productos eliminados: {not_found_pids}", flush=True)
+        except Exception as e:
+            print(f"[CHECK-STOCK] error limpiando 404s: {e}", flush=True)
 
-    # Determinar qué variant_ids (de nuestra DB) deben recibir notificación
-    to_notify = set()
+    # Determinar qué variant_ids deben recibir notificación
+    to_notify  = set()
+    stock_debug = {}
     for pending_vid, pending_pid in pendientes:
         prod_variants = tn_product_data.get(pending_pid, {})
         if not prod_variants:
             continue
         if pending_vid == pending_pid:
-            # El widget guardó product_id como variant_id (sin variantes detectadas)
-            # Notificamos si cualquier variante del producto tiene stock > 0
-            if any(s > 0 for s in prod_variants.values()):
+            # Widget guardó product_id como variant_id → notificar si cualquier variante tiene stock
+            best = max(prod_variants.values(), default=0)
+            stock_debug[pending_vid] = best
+            if best > 0:
                 to_notify.add(pending_vid)
         else:
-            if prod_variants.get(pending_vid, 0) > 0:
+            s = prod_variants.get(pending_vid, 0)
+            stock_debug[pending_vid] = s
+            if s > 0:
                 to_notify.add(pending_vid)
 
-    print(f"[CHECK-STOCK] to_notify={to_notify}", flush=True)
+    print(f"[CHECK-STOCK] stock_debug={stock_debug} to_notify={to_notify}", flush=True)
 
     if not to_notify:
-        return jsonify({"ok": True, "enviados": 0, "msg": "Ninguna variante con stock > 0"})
+        return jsonify({
+            "ok": True, "enviados": 0,
+            "msg": "Ninguna variante con stock > 0",
+            "stock_encontrado": stock_debug,
+        })
 
     conn2 = _get_conn()
     try:
@@ -410,10 +437,10 @@ def notify_webhook():
         print(f"[WEBHOOK] excepcion TN API: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 500
 
+    # stock=None en TN = sin gestión de stock = siempre disponible → 999
     prod_variants = {
-        var["id"]: int(var.get("stock") or 0)
+        var["id"]: (999 if var.get("stock") is None else int(var.get("stock") or 0))
         for var in product.get("variants", [])
-        if var.get("stock") is not None
     }
     print(f"[WEBHOOK] prod_variants={prod_variants}", flush=True)
 
