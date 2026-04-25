@@ -37,18 +37,21 @@ WIDGET_ORIGINS = [
 ]
 
 def _tn_token(store_id):
-    """Devuelve el access token correcto para el store_id dado.
-    Lee TIENDANUBE_TOKENS (JSON {"store_id": "token", ...}).
-    Cae al token único TIENDANUBE_ACCESS_TOKEN si no hay mapeo.
+    """Devuelve el access token para el store_id dado.
+    Busca primero en la tabla tiendanube_tokens (DB), luego en env var TIENDANUBE_ACCESS_TOKEN.
     """
-    import json as _json
-    tokens_json = os.environ.get("TIENDANUBE_TOKENS", "")
-    if tokens_json:
+    if store_id and DATABASE_URL:
         try:
-            mapping = _json.loads(tokens_json)
-            token = mapping.get(str(store_id))
-            if token:
-                return token
+            conn = _get_conn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT access_token FROM tiendanube_tokens WHERE store_id = %s",
+                    (int(store_id),),
+                )
+                row = cur.fetchone()
+            conn.close()
+            if row:
+                return row[0]
         except Exception:
             pass
     return os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
