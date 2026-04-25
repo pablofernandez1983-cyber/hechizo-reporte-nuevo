@@ -17,8 +17,7 @@ from flask import Blueprint, jsonify, redirect, request
 TN_CLIENT_ID     = os.environ.get("TN_RULETA_CLIENT_ID", "")
 TN_CLIENT_SECRET = os.environ.get("TN_RULETA_CLIENT_SECRET", "")
 
-BASE_URL          = "https://hechizo-reporte-nuevo-production.up.railway.app"
-WIDGET_RULETA_URL = f"{BASE_URL}/widget-ruleta.js"
+SCRIPT_ID = 6228  # ID del script registrado en el portal de Partners
 
 USER_AGENT   = "HechizoBijou-Ruleta/1.0 (hechizobijou@gmail.com)"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -66,32 +65,32 @@ def _tn_headers(token):
 
 
 def _register_script(store_id, token):
-    """Registra widget-ruleta.js en el store (idempotente)."""
+    """Activa el script de la ruleta en el store (idempotente)."""
     base     = f"https://api.tiendanube.com/v1/{store_id}/scripts"
     headers  = _tn_headers(token)
     existing = http.get(base, headers=headers, timeout=10).json()
     matches  = [s for s in (existing if isinstance(existing, list) else [])
-                if s.get("src") == WIDGET_RULETA_URL]
+                if s.get("script_id") == SCRIPT_ID]
 
     if matches:
-        return {"ok": True, "msg": f"Script ya registrado (id={matches[0]['id']})", "created": False}
+        return {"ok": True, "msg": f"Script ya activo (id={matches[0]['id']})", "created": False}
 
     resp = http.post(base, headers=headers, json={
-        "src":   WIDGET_RULETA_URL,
-        "event": "onload",
-        "where": "store",
+        "script_id": SCRIPT_ID,
+        "where":     "store",
+        "event":     "onload",
     }, timeout=10)
-    return {"ok": resp.ok, "msg": "Script registrado", "created": True,
+    return {"ok": resp.ok, "msg": "Script activado", "created": True,
             "detail": resp.json() if resp.content else {}}
 
 
 def _remove_script(store_id, token):
-    """Elimina widget-ruleta.js del store (para desinstalación manual si fuera necesario)."""
+    """Desactiva el script de la ruleta en el store."""
     base     = f"https://api.tiendanube.com/v1/{store_id}/scripts"
     headers  = _tn_headers(token)
     existing = http.get(base, headers=headers, timeout=10).json()
     matches  = [s for s in (existing if isinstance(existing, list) else [])
-                if s.get("src") == WIDGET_RULETA_URL]
+                if s.get("script_id") == SCRIPT_ID]
 
     deleted = []
     for s in matches:
