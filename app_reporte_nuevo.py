@@ -125,6 +125,12 @@ def widget_js():
                                mimetype='application/javascript')
 
 
+@app.route("/widget-ruleta.js")
+def widget_ruleta_js():
+    return send_from_directory('static', 'widget-ruleta.js',
+                               mimetype='application/javascript')
+
+
 @app.route("/ejecutar", methods=["POST"])
 def ejecutar():
     if _estado["corriendo"]:
