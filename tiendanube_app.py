@@ -47,6 +47,34 @@ def install():
     return redirect(url)
 
 
+@tn_bp.route("/tiendanube/test-token/<int:store_id>")
+def test_token(store_id):
+    """Prueba el token guardado para un store_id — devuelve nombre de la tienda."""
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT access_token FROM tiendanube_tokens WHERE store_id = %s", (store_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return jsonify({"ok": False, "error": f"No hay token guardado para store_id={store_id}"}), 404
+
+    token = row[0]
+    resp  = http.get(
+        f"https://api.tiendanube.com/v1/{store_id}/store",
+        headers={"Authentication": f"bearer {token}", "User-Agent": USER_AGENT},
+        timeout=10,
+    )
+    return jsonify({
+        "ok":        resp.ok,
+        "http_status": resp.status_code,
+        "store":     resp.json() if resp.ok else resp.text[:300],
+    })
+
+
 @tn_bp.route("/tiendanube/callback")
 def callback():
     """Recibe el code, lo intercambia por token y registra el script."""
