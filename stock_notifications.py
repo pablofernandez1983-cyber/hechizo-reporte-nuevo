@@ -36,10 +36,31 @@ WIDGET_ORIGINS = [
     "https://pruebasdehechizo.mitiendanube.com",
 ]
 
-TN_HEADERS = lambda: {
-    "Authentication": f"bearer {os.environ.get('TIENDANUBE_ACCESS_TOKEN', '')}",
-    "User-Agent": "HechizoBijou-Stock/1.0 (hechizobijou@gmail.com)",
-}
+def _tn_token(store_id):
+    """Devuelve el access token correcto para el store_id dado.
+    Lee TIENDANUBE_TOKENS (JSON {"store_id": "token", ...}).
+    Cae al token único TIENDANUBE_ACCESS_TOKEN si no hay mapeo.
+    """
+    import json as _json
+    tokens_json = os.environ.get("TIENDANUBE_TOKENS", "")
+    if tokens_json:
+        try:
+            mapping = _json.loads(tokens_json)
+            token = mapping.get(str(store_id))
+            if token:
+                return token
+        except Exception:
+            pass
+    return os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
+
+def _tn_headers(store_id=None):
+    token = _tn_token(store_id) if store_id else os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
+    return {
+        "Authentication": f"bearer {token}",
+        "User-Agent": "HechizoBijou-Stock/1.0 (hechizobijou@gmail.com)",
+    }
+
+TN_HEADERS = lambda: _tn_headers()
 
 notify_bp = Blueprint("notify", __name__)
 
@@ -268,16 +289,11 @@ def check_stock():
         return jsonify({}), 200
     import requests as _req
 
-    TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
-    TN_TOKEN    = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
-    if not TN_STORE_ID or not TN_TOKEN:
-        return jsonify({"ok": False, "error": "Credenciales TN no configuradas"}), 500
-
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT DISTINCT variant_id, product_id
+                SELECT DISTINCT variant_id, product_id, store_id
                 FROM stock_notifications
                 WHERE status = 'pending'
             """)
@@ -290,30 +306,38 @@ def check_stock():
     if not pendientes:
         return jsonify({"ok": True, "enviados": 0, "msg": "Sin notificaciones pendientes"})
 
-    product_ids   = list({pid for _, pid in pendientes})
-    not_found_pids = []
+    # Agrupar por store_id para usar el token correcto por tienda
+    from collections import defaultdict as _dd
+    by_store = _dd(list)
+    for vid, pid, sid in pendientes:
+        by_store[sid].append((vid, pid))
 
-    # {product_id: {variant_id: stock}}
-    # stock=None en TN significa "sin gestión de stock" → siempre disponible → se trata como 999
-    tn_product_data = {}
-    for pid in product_ids:
-        try:
-            resp = _req.get(
-                f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products/{pid}",
-                headers=TN_HEADERS(), timeout=10,
-            )
-            print(f"[CHECK-STOCK] product_id={pid} status={resp.status_code}", flush=True)
-            if resp.status_code == 404:
-                not_found_pids.append(pid)
-            elif resp.ok:
-                variant_map = {}
-                for var in resp.json().get("variants", []):
-                    s = var.get("stock")
-                    variant_map[var["id"]] = 999 if s is None else int(s)
-                tn_product_data[pid] = variant_map
-                print(f"[CHECK-STOCK] product_id={pid} variants={variant_map}", flush=True)
-        except Exception as e:
-            print(f"[CHECK-STOCK] error pid={pid}: {e}", flush=True)
+    not_found_pids = []
+    tn_product_data = {}   # {product_id: {variant_id: stock}}
+
+    for sid, items in by_store.items():
+        product_ids = list({pid for _, pid in items})
+        for pid in product_ids:
+            try:
+                resp = _req.get(
+                    f"https://api.tiendanube.com/v1/{sid}/products/{pid}",
+                    headers=_tn_headers(sid), timeout=10,
+                )
+                print(f"[CHECK-STOCK] store={sid} product_id={pid} status={resp.status_code}", flush=True)
+                if resp.status_code == 404:
+                    not_found_pids.append(pid)
+                elif resp.ok:
+                    variant_map = {}
+                    for var in resp.json().get("variants", []):
+                        s = var.get("stock")
+                        variant_map[var["id"]] = 999 if s is None else int(s)
+                    tn_product_data[pid] = variant_map
+                    print(f"[CHECK-STOCK] product_id={pid} variants={variant_map}", flush=True)
+            except Exception as e:
+                print(f"[CHECK-STOCK] error pid={pid}: {e}", flush=True)
+
+    # pendientes sin store_id dimension para el loop siguiente
+    pendientes = [(vid, pid) for vid, pid, _ in pendientes]
 
     # Limpiar productos que ya no existen en TN
     if not_found_pids:
@@ -391,7 +415,8 @@ def notify_webhook():
     body = request.get_json(silent=True) or {}
     event      = body.get("event", "")
     product_id = body.get("id") or body.get("product_id")
-    print(f"[WEBHOOK] event={event!r} product_id={product_id} body={body}", flush=True)
+    store_id   = int(body.get("store_id") or 0)
+    print(f"[WEBHOOK] event={event!r} product_id={product_id} store_id={store_id} body={body}", flush=True)
 
     if event != "product/updated":
         return jsonify({"ok": True, "msg": f"event ignored: {event}"}), 200
@@ -420,16 +445,16 @@ def notify_webhook():
     if not variant_ids:
         return jsonify({"ok": True, "msg": "no pending for this product"}), 200
 
-    # Fetch stock actualizado desde TN
-    TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
-    TN_TOKEN    = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
+    # Usar store_id del payload para llamar al API correcto
+    TN_STORE_ID = store_id or os.environ.get("TIENDANUBE_STORE_ID", "")
+    TN_TOKEN    = _tn_token(TN_STORE_ID)
     if not TN_STORE_ID or not TN_TOKEN:
         return jsonify({"ok": False, "error": "credenciales TN no configuradas"}), 500
 
     try:
         resp = _req.get(
             f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products/{product_id}",
-            headers=TN_HEADERS(), timeout=10,
+            headers=_tn_headers(TN_STORE_ID), timeout=10,
         )
         if not resp.ok:
             print(f"[WEBHOOK] TN API error {resp.status_code}", flush=True)
