@@ -314,23 +314,16 @@ def notify_webhook():
     """
     import requests as _req
 
-    # Verificar firma HMAC si está configurado el client secret
-    client_secret = os.environ.get("TN_APP_CLIENT_SECRET", "")
-    if client_secret:
-        sig = request.headers.get("X-Linkedstore-Hmac-Sha256", "")
-        expected = base64.b64encode(
-            hmac.new(client_secret.encode("utf-8"), request.data, hashlib.sha256).digest()
-        ).decode()
-        if not hmac.compare_digest(sig, expected):
-            return jsonify({"error": "invalid signature"}), 401
-
     body = request.get_json(silent=True) or {}
-
-    if body.get("event") != "product/updated":
-        return jsonify({"ok": True, "msg": "event ignored"}), 200
-
+    event      = body.get("event", "")
     product_id = body.get("id") or body.get("product_id")
+    print(f"[WEBHOOK] event={event!r} product_id={product_id} body={body}", flush=True)
+
+    if event != "product/updated":
+        return jsonify({"ok": True, "msg": f"event ignored: {event}"}), 200
+
     if not product_id:
+        print("[WEBHOOK] sin product_id, ignorando", flush=True)
         return jsonify({"ok": True}), 200
 
     product_id = int(product_id)
@@ -348,6 +341,8 @@ def notify_webhook():
     finally:
         conn.close()
 
+    print(f"[WEBHOOK] product_id={product_id} variant_ids_pendientes={variant_ids}", flush=True)
+
     if not variant_ids:
         return jsonify({"ok": True, "msg": "no pending for this product"}), 200
 
@@ -363,9 +358,11 @@ def notify_webhook():
             headers=TN_HEADERS(), timeout=10,
         )
         if not resp.ok:
+            print(f"[WEBHOOK] TN API error {resp.status_code}", flush=True)
             return jsonify({"ok": False, "error": f"TN {resp.status_code}"}), 502
         product = resp.json()
     except Exception as e:
+        print(f"[WEBHOOK] excepcion TN API: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 500
 
     variant_stock = {
@@ -373,8 +370,10 @@ def notify_webhook():
         for var in product.get("variants", [])
         if var.get("id") in variant_ids and var.get("stock") is not None
     }
+    print(f"[WEBHOOK] variant_stock={variant_stock}", flush=True)
 
     result = _dispatch_by_stock(variant_stock)
+    print(f"[WEBHOOK] resultado={result}", flush=True)
     return jsonify({"ok": True, **result}), 200
 
 
