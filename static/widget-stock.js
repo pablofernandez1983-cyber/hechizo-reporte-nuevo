@@ -80,9 +80,9 @@
     document.getElementById('sn-submit').addEventListener('click', submitForm);
   }
 
-  function openModal(productId, variantId, productName, variantName, sku) {
+  function openModal(productId, variantId, productName, variantName, sku, productUrl) {
     buildModal();
-    _currentProduct = { productId, variantId, productName, variantName, sku };
+    _currentProduct = { productId, variantId, productName, variantName, sku, productUrl };
 
     document.getElementById('sn-product-name').textContent = productName;
     document.getElementById('sn-email').value = '';
@@ -121,7 +121,7 @@
     submit.textContent = 'Enviando...';
 
     try {
-      const { productId, variantId, productName, variantName, sku } = _currentProduct;
+      const { productId, variantId, productName, variantName, sku, productUrl } = _currentProduct;
       const res = await fetch(ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -133,6 +133,7 @@
           product_name: productName,
           variant_name: variantName,
           sku:          sku || undefined,
+          product_url:  productUrl || undefined,
         })
       });
 
@@ -197,7 +198,7 @@
       const variantName = variantNameEl ? variantNameEl.textContent.trim() : '';
       const skuEl = document.querySelector('[data-sku], [itemprop="sku"], .product-sku, .js-sku');
       const sku = skuEl ? (skuEl.getAttribute('data-sku') || skuEl.getAttribute('content') || skuEl.textContent).trim() : '';
-      openModal(productId, variantId, productName, variantName, sku);
+      openModal(productId, variantId, productName, variantName, sku, window.location.href);
     });
 
     // Observar el botón de compra — cuando se vuelve disabled = variante sin stock
@@ -279,10 +280,13 @@
       notifyBtn.className = 'sn-listing-btn';
       notifyBtn.textContent = '🔔 Avisame cuando haya stock';
 
+      const cardLink = card.querySelector('a.item-link, a[href*="/productos/"]');
+      const cardUrl  = cardLink ? cardLink.href : '';
+
       notifyBtn.addEventListener('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
-        openModal(productId, variantId, productName, '', sku);
+        openModal(productId, variantId, productName, '', sku, cardUrl);
       });
 
       // Inject into NubeSDK slot if available (same approach as other TN apps)

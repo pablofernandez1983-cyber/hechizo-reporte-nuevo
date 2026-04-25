@@ -76,6 +76,7 @@ def _ensure_columns():
             cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ")
             cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")
             cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS sku VARCHAR(100)")
+            cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS product_url VARCHAR(500)")
         conn.commit()
         conn.close()
     except Exception:
@@ -102,22 +103,24 @@ def notify():
     product_name = str(body["product_name"])[:255]
     variant_name = str(body["variant_name"])[:255]
     sku          = str(body.get("sku") or "")[:100] or None
+    product_url  = str(body.get("product_url") or "")[:500] or None
 
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO stock_notifications
-                  (email, product_id, variant_id, store_id, product_name, variant_name, sku, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
+                  (email, product_id, variant_id, store_id, product_name, variant_name, sku, product_url, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
                 ON CONFLICT (email, variant_id)
                 DO UPDATE SET
                   product_name = EXCLUDED.product_name,
                   variant_name = EXCLUDED.variant_name,
                   sku          = COALESCE(EXCLUDED.sku, stock_notifications.sku),
+                  product_url  = COALESCE(EXCLUDED.product_url, stock_notifications.product_url),
                   status       = 'pending',
                   sent_at      = NULL
-            """, (email, product_id, variant_id, store_id, product_name, variant_name, sku))
+            """, (email, product_id, variant_id, store_id, product_name, variant_name, sku, product_url))
         conn.commit()
     finally:
         conn.close()
@@ -260,7 +263,7 @@ def notify_send(variant_id):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, email, product_name, variant_name
+                SELECT id, email, product_name, variant_name, product_url
                 FROM stock_notifications
                 WHERE variant_id = %s AND status = 'pending'
             """, (variant_id,))
@@ -384,7 +387,7 @@ def check_stock():
     try:
         with conn2.cursor() as cur:
             cur.execute("""
-                SELECT id, email, product_name, variant_name
+                SELECT id, email, product_name, variant_name, product_url
                 FROM stock_notifications
                 WHERE variant_id = ANY(%s) AND status = 'pending'
             """, (list(to_notify),))
@@ -484,7 +487,7 @@ def notify_webhook():
     try:
         with conn2.cursor() as cur:
             cur.execute("""
-                SELECT id, email, product_name, variant_name
+                SELECT id, email, product_name, variant_name, product_url
                 FROM stock_notifications
                 WHERE variant_id = ANY(%s) AND status = 'pending'
             """, (list(to_notify),))
@@ -573,7 +576,7 @@ def _dispatch_by_stock(variant_stock: dict) -> dict:
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, email, product_name, variant_name
+                SELECT id, email, product_name, variant_name, product_url
                 FROM stock_notifications
                 WHERE variant_id = ANY(%s) AND status = 'pending'
             """, (with_stock,))
@@ -592,9 +595,11 @@ def _send_and_mark(pendientes: list) -> dict:
     errors   = []
     sent_ids = []
 
-    for (notif_id, email, product_name, variant_name) in pendientes:
+    for row in pendientes:
+        notif_id, email, product_name, variant_name = row[0], row[1], row[2], row[3]
+        product_url = row[4] if len(row) > 4 else None
         try:
-            _send_restock_email(email, product_name, variant_name)
+            _send_restock_email(email, product_name, variant_name, product_url)
             sent_ids.append(notif_id)
         except Exception as e:
             errors.append(f"{email}: {e}")
@@ -635,7 +640,7 @@ def _get_gmail_access_token():
     return resp.json()["access_token"]
 
 
-def _send_restock_email(to_addr, product_name, variant_name):
+def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
     import requests as _req
     import base64 as _b64
     from email.mime.multipart import MIMEMultipart
@@ -645,6 +650,7 @@ def _send_restock_email(to_addr, product_name, variant_name):
     if variant_name and variant_name not in ("-", ""):
         nombre_completo += f" — {variant_name}"
 
+    link = product_url or "https://hechizo.com.ar"
     subject = f"¡{product_name} volvió a tener stock!"
 
     html = f"""<!DOCTYPE html>
@@ -657,7 +663,7 @@ def _send_restock_email(to_addr, product_name, variant_name):
              style="background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
         <tr>
           <td style="background:#1a1a1a;padding:20px 32px">
-            <span style="color:#fff;font-size:20px;font-weight:bold;letter-spacing:.5px">Hechizo Bijou</span>
+            <span style="color:#fff;font-size:20px;font-weight:bold;letter-spacing:.5px">Hechizo</span>
           </td>
         </tr>
         <tr>
@@ -668,16 +674,16 @@ def _send_restock_email(to_addr, product_name, variant_name):
               <strong>{nombre_completo}</strong>. ¡Ya está disponible!
             </p>
             <div style="text-align:center;margin:28px 0">
-              <a href="https://hechizobijou.com.ar"
+              <a href="{link}"
                  style="display:inline-block;background:#1a1a1a;color:#fff;
                         padding:14px 36px;text-decoration:none;border-radius:4px;
                         font-size:14px;font-weight:bold;letter-spacing:.3px">
-                Ver en la tienda
+                Ver producto
               </a>
             </div>
             <p style="font-size:13px;color:#999;margin:24px 0 0;line-height:1.6;border-top:1px solid #eee;padding-top:20px">
               Recibiste este mensaje porque lo solicitaste en
-              <a href="https://hechizobijou.com.ar" style="color:#666">hechizobijou.com.ar</a>.
+              <a href="https://hechizo.com.ar" style="color:#666">hechizo.com.ar</a>.
               <br>Si no lo solicitaste, podés ignorar este email.
             </p>
           </td>
@@ -691,7 +697,7 @@ def _send_restock_email(to_addr, product_name, variant_name):
     gmail_user = os.environ.get("GMAIL_USER", "hechizobijou@gmail.com")
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"Hechizo Bijou <{gmail_user}>"
+    msg["From"]    = f"Hechizo <{gmail_user}>"
     msg["To"]      = to_addr
     msg.attach(MIMEText(html, "html", "utf-8"))
 
