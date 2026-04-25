@@ -27,6 +27,9 @@ app.register_blueprint(notify_bp)
 from tiendanube_app import tn_bp
 app.register_blueprint(tn_bp)
 
+from tiendanube_ruleta import ruleta_bp
+app.register_blueprint(ruleta_bp)
+
 S3_BUCKET   = os.environ.get("AWS_S3_BUCKET_NAME", "")
 S3_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", "")
 S3_REGION   = os.environ.get("AWS_DEFAULT_REGION", "auto")
