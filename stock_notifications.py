@@ -12,6 +12,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 ALLOWED_ORIGINS = [
     "https://hechizo.com.ar",
+    "https://hechizobijou.com.ar",
     "https://hechizobijou.mitiendanube.com",
     "https://pruebasdehechizo.mitiendanube.com",
 ]
