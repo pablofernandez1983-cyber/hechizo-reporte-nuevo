@@ -132,9 +132,9 @@ def callback():
     store_id     = data["user_id"]
 
     _save_token(store_id, access_token)
-    result = _register_script(store_id, access_token)
 
-    return jsonify({"ok": True, "store_id": store_id, "script": result})
+    # El script se activa automáticamente en Tiendanube al completar el OAuth
+    return jsonify({"ok": True, "store_id": store_id})
 
 
 @ruleta_bp.route("/ruleta/setup-script/<int:store_id>")
