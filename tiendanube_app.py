@@ -76,3 +76,36 @@ def callback():
     _save_token(store_id, access_token)
 
     return jsonify({"ok": True, "store_id": store_id})
+
+
+@tn_bp.route("/tiendanube/setup-webhook")
+def setup_webhook():
+    """
+    Registra el webhook product/updated en Tiendanube.
+    Llamar una sola vez desde el navegador para activar las notificaciones automáticas.
+    GET /tiendanube/setup-webhook
+    """
+    TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
+    TN_TOKEN    = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
+
+    if not TN_STORE_ID or not TN_TOKEN:
+        return jsonify({"error": "TIENDANUBE_STORE_ID o TIENDANUBE_ACCESS_TOKEN no configurados"}), 500
+
+    webhook_url = "https://hechizo-reporte-nuevo-production.up.railway.app/notify/webhook"
+
+    resp = http.post(
+        f"https://api.tiendanube.com/v1/{TN_STORE_ID}/webhooks",
+        headers={
+            "Authentication": f"bearer {TN_TOKEN}",
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/json",
+        },
+        json={"event": "product/updated", "url": webhook_url},
+        timeout=15,
+    )
+
+    return jsonify({
+        "ok":     resp.ok,
+        "status": resp.status_code,
+        "detail": resp.json() if resp.content else {},
+    })

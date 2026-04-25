@@ -6,11 +6,16 @@ Endpoints:
   GET    /notify/list                 — lista notificaciones con filtros
   GET    /notify/products             — ranking de productos con más demanda
   GET    /notify/stats                — estadísticas generales
-  POST   /notify/send/<variant_id>    — envía mails y marca como enviado
+  POST   /notify/send/<variant_id>    — envía mails y marca como enviado (manual)
+  POST   /notify/check-stock          — chequea TN API y envía pendientes con stock > 0
+  POST   /notify/webhook              — recibe webhooks product/updated de Tiendanube
   DELETE /notify/<notif_id>           — elimina una notificación
 """
 
 import os
+import hmac
+import hashlib
+import base64
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -28,6 +33,11 @@ WIDGET_ORIGINS = [
     "https://pruebasdehechizo.mitiendanube.com",
 ]
 
+TN_HEADERS = lambda: {
+    "Authentication": f"bearer {os.environ.get('TIENDANUBE_ACCESS_TOKEN', '')}",
+    "User-Agent": "HechizoBijou-Stock/1.0 (hechizobijou@gmail.com)",
+}
+
 notify_bp = Blueprint("notify", __name__)
 
 REQUIRED_FIELDS = {"email", "product_id", "variant_id", "product_name", "variant_name"}
@@ -39,20 +49,13 @@ def _get_conn():
 
 
 def _ensure_columns():
-    """Agrega columnas faltantes de forma idempotente."""
     if not DATABASE_URL:
         return
     try:
         conn = _get_conn()
         with conn.cursor() as cur:
-            cur.execute("""
-                ALTER TABLE stock_notifications
-                ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ
-            """)
-            cur.execute("""
-                ALTER TABLE stock_notifications
-                ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()
-            """)
+            cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ")
+            cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")
         conn.commit()
         conn.close()
     except Exception:
@@ -180,18 +183,14 @@ def _enrich_with_stock(rows):
             r["current_stock"] = None
         return
 
-    headers = {
-        "Authentication": f"bearer {TN_TOKEN}",
-        "User-Agent": "HechizoBijou-Stock/1.0 (hechizobijou@gmail.com)",
-    }
-    product_ids  = list({r["product_id"] for r in rows})
+    product_ids   = list({r["product_id"] for r in rows})
     variant_stock = {}
 
     for pid in product_ids:
         try:
             resp = _req.get(
                 f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products/{pid}",
-                headers=headers, timeout=10,
+                headers=TN_HEADERS(), timeout=10,
             )
             if resp.ok:
                 for var in resp.json().get("variants", []):
@@ -215,11 +214,7 @@ def notify_stats():
             sent = int(cur.fetchone()[0])
             cur.execute("SELECT COUNT(*) FROM stock_notifications WHERE status = 'pending'")
             pending = int(cur.fetchone()[0])
-            cur.execute("""
-                SELECT COUNT(DISTINCT variant_id)
-                FROM stock_notifications
-                WHERE status = 'pending'
-            """)
+            cur.execute("SELECT COUNT(DISTINCT variant_id) FROM stock_notifications WHERE status = 'pending'")
             productos_esperando = int(cur.fetchone()[0])
     finally:
         conn.close()
@@ -232,7 +227,7 @@ def notify_stats():
     })
 
 
-# ── POST /notify/send/<variant_id> ─────────────────────────────────────────────
+# ── POST /notify/send/<variant_id>  (manual) ──────────────────────────────────
 
 @notify_bp.route("/notify/send/<int:variant_id>", methods=["POST"])
 @cross_origin(origins="*")
@@ -252,29 +247,130 @@ def notify_send(variant_id):
     if not pendientes:
         return jsonify({"ok": True, "enviados": 0, "msg": "Sin notificaciones pendientes"})
 
-    errors   = []
-    sent_ids = []
-    for (notif_id, email, product_name, variant_name) in pendientes:
-        try:
-            _send_restock_email(email, product_name, variant_name)
-            sent_ids.append(notif_id)
-        except Exception as e:
-            errors.append(f"{email}: {e}")
+    result = _send_and_mark(pendientes)
+    return jsonify({"ok": True, **result})
 
-    if sent_ids:
-        conn2 = _get_conn()
-        try:
-            with conn2.cursor() as cur:
-                cur.execute("""
-                    UPDATE stock_notifications
-                    SET status = 'sent', sent_at = NOW()
-                    WHERE id = ANY(%s)
-                """, (sent_ids,))
-            conn2.commit()
-        finally:
-            conn2.close()
 
-    return jsonify({"ok": True, "enviados": len(sent_ids), "errores": errors})
+# ── POST /notify/check-stock  (manual o cron) ─────────────────────────────────
+
+@notify_bp.route("/notify/check-stock", methods=["POST"])
+@cross_origin(origins="*")
+def check_stock():
+    """Consulta TN para todos los productos con pendientes y envía donde stock > 0."""
+    import requests as _req
+
+    TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
+    TN_TOKEN    = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
+    if not TN_STORE_ID or not TN_TOKEN:
+        return jsonify({"ok": False, "error": "Credenciales TN no configuradas"}), 500
+
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT variant_id, product_id
+                FROM stock_notifications
+                WHERE status = 'pending'
+            """)
+            pendientes = cur.fetchall()
+    finally:
+        conn.close()
+
+    if not pendientes:
+        return jsonify({"ok": True, "enviados": 0, "msg": "Sin notificaciones pendientes"})
+
+    product_ids   = list({pid for _, pid in pendientes})
+    variant_stock = {}
+
+    for pid in product_ids:
+        try:
+            resp = _req.get(
+                f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products/{pid}",
+                headers=TN_HEADERS(), timeout=10,
+            )
+            if resp.ok:
+                for var in resp.json().get("variants", []):
+                    if var.get("stock") is not None:
+                        variant_stock[var["id"]] = int(var["stock"])
+        except Exception:
+            pass
+
+    result = _dispatch_by_stock(variant_stock)
+    return jsonify({"ok": True, **result})
+
+
+# ── POST /notify/webhook  (Tiendanube push) ───────────────────────────────────
+
+@notify_bp.route("/notify/webhook", methods=["POST"])
+def notify_webhook():
+    """
+    Recibe eventos product/updated de Tiendanube.
+    TN envía: { "store_id": "...", "event": "product/updated", "id": <product_id> }
+    """
+    import requests as _req
+
+    # Verificar firma HMAC si está configurado el client secret
+    client_secret = os.environ.get("TN_APP_CLIENT_SECRET", "")
+    if client_secret:
+        sig = request.headers.get("X-Linkedstore-Hmac-Sha256", "")
+        expected = base64.b64encode(
+            hmac.new(client_secret.encode("utf-8"), request.data, hashlib.sha256).digest()
+        ).decode()
+        if not hmac.compare_digest(sig, expected):
+            return jsonify({"error": "invalid signature"}), 401
+
+    body = request.get_json(silent=True) or {}
+
+    if body.get("event") != "product/updated":
+        return jsonify({"ok": True, "msg": "event ignored"}), 200
+
+    product_id = body.get("id") or body.get("product_id")
+    if not product_id:
+        return jsonify({"ok": True}), 200
+
+    product_id = int(product_id)
+
+    # Chequear si hay pendientes para este producto antes de llamar a TN
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT variant_id
+                FROM stock_notifications
+                WHERE product_id = %s AND status = 'pending'
+            """, (product_id,))
+            variant_ids = [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    if not variant_ids:
+        return jsonify({"ok": True, "msg": "no pending for this product"}), 200
+
+    # Fetch stock actualizado desde TN
+    TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
+    TN_TOKEN    = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
+    if not TN_STORE_ID or not TN_TOKEN:
+        return jsonify({"ok": False, "error": "credenciales TN no configuradas"}), 500
+
+    try:
+        resp = _req.get(
+            f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products/{product_id}",
+            headers=TN_HEADERS(), timeout=10,
+        )
+        if not resp.ok:
+            return jsonify({"ok": False, "error": f"TN {resp.status_code}"}), 502
+        product = resp.json()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    variant_stock = {
+        var["id"]: int(var.get("stock") or 0)
+        for var in product.get("variants", [])
+        if var.get("id") in variant_ids and var.get("stock") is not None
+    }
+
+    result = _dispatch_by_stock(variant_stock)
+    return jsonify({"ok": True, **result}), 200
 
 
 # ── DELETE /notify/<notif_id> ──────────────────────────────────────────────────
@@ -292,6 +388,63 @@ def notify_delete(notif_id):
     return jsonify({"ok": True})
 
 
+# ── Helpers internos ───────────────────────────────────────────────────────────
+
+def _dispatch_by_stock(variant_stock: dict) -> dict:
+    """
+    Dado {variant_id: stock_actual}, busca pendientes para las variantes
+    con stock > 0 y manda los mails.
+    """
+    with_stock = [vid for vid, s in variant_stock.items() if s > 0]
+    if not with_stock:
+        return {"enviados": 0, "msg": "Ninguna variante con stock > 0"}
+
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, email, product_name, variant_name
+                FROM stock_notifications
+                WHERE variant_id = ANY(%s) AND status = 'pending'
+            """, (with_stock,))
+            pendientes = cur.fetchall()
+    finally:
+        conn.close()
+
+    if not pendientes:
+        return {"enviados": 0, "msg": "Sin pendientes para las variantes con stock"}
+
+    return _send_and_mark(pendientes)
+
+
+def _send_and_mark(pendientes: list) -> dict:
+    """Envía mails y marca como enviados. Devuelve {"enviados": N, "errores": [...]}."""
+    errors   = []
+    sent_ids = []
+
+    for (notif_id, email, product_name, variant_name) in pendientes:
+        try:
+            _send_restock_email(email, product_name, variant_name)
+            sent_ids.append(notif_id)
+        except Exception as e:
+            errors.append(f"{email}: {e}")
+
+    if sent_ids:
+        conn = _get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE stock_notifications
+                    SET status = 'sent', sent_at = NOW()
+                    WHERE id = ANY(%s)
+                """, (sent_ids,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    return {"enviados": len(sent_ids), "errores": errors}
+
+
 # ── Email ──────────────────────────────────────────────────────────────────────
 
 def _send_restock_email(to_addr, product_name, variant_name):
@@ -299,7 +452,7 @@ def _send_restock_email(to_addr, product_name, variant_name):
         raise RuntimeError("GMAIL_USER o GMAIL_APP_PASSWORD no configurados en Railway")
 
     nombre_completo = product_name
-    if variant_name and variant_name != "-":
+    if variant_name and variant_name not in ("-", ""):
         nombre_completo += f" — {variant_name}"
 
     subject = f"¡{product_name} volvió a tener stock!"
@@ -312,15 +465,11 @@ def _send_restock_email(to_addr, product_name, variant_name):
     <tr><td align="center">
       <table width="520" cellpadding="0" cellspacing="0"
              style="background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
-
         <tr>
           <td style="background:#1a1a1a;padding:20px 32px">
-            <span style="color:#fff;font-size:20px;font-weight:bold;letter-spacing:.5px">
-              Hechizo Bijou
-            </span>
+            <span style="color:#fff;font-size:20px;font-weight:bold;letter-spacing:.5px">Hechizo Bijou</span>
           </td>
         </tr>
-
         <tr>
           <td style="padding:32px">
             <p style="font-size:15px;color:#333;margin:0 0 16px">Hola,</p>
@@ -343,7 +492,6 @@ def _send_restock_email(to_addr, product_name, variant_name):
             </p>
           </td>
         </tr>
-
       </table>
     </td></tr>
   </table>
