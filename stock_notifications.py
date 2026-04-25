@@ -261,7 +261,6 @@ def notify_send(variant_id):
 def check_stock():
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    """Consulta TN para todos los productos con pendientes y envía donde stock > 0."""
     import requests as _req
 
     TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
@@ -281,6 +280,8 @@ def check_stock():
     finally:
         conn.close()
 
+    print(f"[CHECK-STOCK] pendientes={pendientes}", flush=True)
+
     if not pendientes:
         return jsonify({"ok": True, "enviados": 0, "msg": "Sin notificaciones pendientes"})
 
@@ -293,14 +294,18 @@ def check_stock():
                 f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products/{pid}",
                 headers=TN_HEADERS(), timeout=10,
             )
+            print(f"[CHECK-STOCK] product_id={pid} status={resp.status_code}", flush=True)
             if resp.ok:
                 for var in resp.json().get("variants", []):
                     if var.get("stock") is not None:
                         variant_stock[var["id"]] = int(var["stock"])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CHECK-STOCK] error pid={pid}: {e}", flush=True)
+
+    print(f"[CHECK-STOCK] variant_stock={variant_stock}", flush=True)
 
     result = _dispatch_by_stock(variant_stock)
+    print(f"[CHECK-STOCK] resultado={result}", flush=True)
     return jsonify({"ok": True, **result})
 
 
