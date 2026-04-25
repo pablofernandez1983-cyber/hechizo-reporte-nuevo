@@ -229,9 +229,11 @@ def notify_stats():
 
 # ── POST /notify/send/<variant_id>  (manual) ──────────────────────────────────
 
-@notify_bp.route("/notify/send/<int:variant_id>", methods=["POST"])
-@cross_origin(origins="*")
+@notify_bp.route("/notify/send/<int:variant_id>", methods=["POST", "OPTIONS"])
+@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
 def notify_send(variant_id):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -253,9 +255,11 @@ def notify_send(variant_id):
 
 # ── POST /notify/check-stock  (manual o cron) ─────────────────────────────────
 
-@notify_bp.route("/notify/check-stock", methods=["POST"])
-@cross_origin(origins="*")
+@notify_bp.route("/notify/check-stock", methods=["POST", "OPTIONS"])
+@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
 def check_stock():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
     """Consulta TN para todos los productos con pendientes y envía donde stock > 0."""
     import requests as _req
 
@@ -375,9 +379,11 @@ def notify_webhook():
 
 # ── DELETE /notify/<notif_id> ──────────────────────────────────────────────────
 
-@notify_bp.route("/notify/<int:notif_id>", methods=["DELETE"])
-@cross_origin(origins="*")
+@notify_bp.route("/notify/<int:notif_id>", methods=["DELETE", "OPTIONS"])
+@cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type"])
 def notify_delete(notif_id):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
