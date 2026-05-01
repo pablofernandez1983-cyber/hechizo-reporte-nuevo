@@ -570,11 +570,16 @@ def _stock_compute():
             if row:
                 valuacion_mes_anterior = float(row[0])
             cur2.execute("""
-                SELECT TO_CHAR(DATE_TRUNC('month', fecha), 'YYYY-MM') AS mes,
-                       MAX(valuacion_total) AS val
-                FROM stock_valuacion
-                WHERE fecha >= NOW()::date - INTERVAL '13 months'
-                GROUP BY 1 ORDER BY 1
+                SELECT TO_CHAR(mes_date, 'YYYY-MM') AS mes, valuacion_total AS val
+                FROM (
+                    SELECT DISTINCT ON (DATE_TRUNC('month', fecha))
+                           DATE_TRUNC('month', fecha) AS mes_date,
+                           valuacion_total
+                    FROM stock_valuacion
+                    WHERE fecha >= NOW()::date - INTERVAL '13 months'
+                    ORDER BY DATE_TRUNC('month', fecha), fecha DESC
+                ) t
+                ORDER BY mes_date
             """)
             valuacion_historia = [{"mes": r[0], "val": float(r[1])} for r in cur2.fetchall()]
             conn2.commit()
