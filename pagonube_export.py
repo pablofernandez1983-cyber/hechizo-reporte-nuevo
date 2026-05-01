@@ -195,6 +195,17 @@ def export_pagonube(page) -> str | None:
     except PWTimeout:
         pass
 
+    # Eliminar filtros de fecha activos (ej: "Último mes") para exportar todo
+    chips = frame.locator('[data-testid="dismiss-chip"]')
+    chip_count = chips.count()
+    if chip_count:
+        print(f"[OK] Eliminando {chip_count} filtro(s) de fecha...")
+        for i in range(chip_count):
+            chips.nth(i).click()
+            pace()
+    else:
+        print("[OK] Sin filtros de fecha activos")
+
     # Interceptar la descarga
     print("[OK] Disparando export...")
     with page.expect_download(timeout=MAX_TOTAL_SECONDS * 1000) as dl_info:

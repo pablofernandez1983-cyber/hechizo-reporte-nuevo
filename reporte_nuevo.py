@@ -1161,45 +1161,64 @@ def fetch_google_ads():
 # ═══════════════════════════════════════════════════════════════
 
 def fetch_pagonube():
-    log("PagoNube: leyendo desde S3...")
+    log("PagoNube: leyendo desde Supabase + S3...")
     comisiones = defaultdict(float)
     ret_iibb   = defaultdict(float)
 
+    # Fuente primaria: Supabase (historial completo acumulado de todos los runs)
+    conn = get_db()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT anio, mes, SUM(comision_total), SUM(iibb)
+                    FROM pagonube
+                    GROUP BY anio, mes
+                """)
+                db_rows = cur.fetchall()
+            for anio, mes, com, iibb in db_rows:
+                k = (int(anio), int(mes))
+                if com:  comisiones[k] += float(com)
+                if iibb: ret_iibb[k]   += float(iibb)
+            log(f"  PagoNube Supabase: {len(db_rows)} meses")
+        except Exception as e:
+            log(f"  [WARN] PagoNube Supabase error: {e}")
+
+    meses_supabase = set(comisiones.keys()) | set(ret_iibb.keys())
+
+    # Complemento: S3 JSON para meses no cubiertos por Supabase (típicamente mes corriente)
     datos = s3_leer("pagonube.json")
     if not datos:
-        log("  [WARN] pagonube.json no encontrado en S3"); return {}
-
-    log(f"  PagoNube JSON: {len(datos)} registros")
-    if datos: log(f"  PagoNube claves muestra: {list(datos[0].keys())[:8]}")
-
-    # Log columnas disponibles para detectar nombre exacto de IIBB
-    if datos:
+        log("  [WARN] pagonube.json no encontrado en S3")
+    else:
+        log(f"  PagoNube S3: {len(datos)} registros")
+        if datos: log(f"  PagoNube claves muestra: {list(datos[0].keys())[:8]}")
         todas_cols = set()
-        for row in datos[:20]:
-            todas_cols.update(row.keys())
+        for row in datos[:20]: todas_cols.update(row.keys())
         iibb_cols = [c for c in todas_cols if "iibb" in c.lower() or "impuesto" in c.lower()]
-        log(f"  PagoNube columnas IIBB encontradas: {iibb_cols}")
+        if iibb_cols: log(f"  PagoNube columnas IIBB: {iibb_cols}")
 
-    sin_fecha = 0
-    for row in datos:
-        desc = str(row.get("Descripción", row.get("Descripcion","venta"))).lower()
-        if any(x in desc for x in ["devolucion","devolución","refund","chargeback"]): continue
-        fecha = (row.get("Fecha de creación") or row.get("Fecha de creacion")
-                 or row.get("Fecha") or "")
-        if not fecha: sin_fecha += 1; continue
-        tasa    = safe_float(row.get("Tasa Pago Nube", 0))
-        cuota_s = safe_float(row.get("Costo de Cuota Simple", 0))
-        cuota_p = safe_float(row.get("Costo de cuotas Pago Nube", 0))
-        # Intentar múltiples nombres posibles para IIBB
-        iibb = (safe_float(row.get("Impuestos - IIBB", 0))
-                or safe_float(row.get("IIBB", 0))
-                or safe_float(row.get("Impuesto IIBB", 0))
-                or safe_float(row.get("Impuestos", 0)))
-        com = tasa + cuota_s + cuota_p
-        if com:   acumular(comisiones, fecha, com)
-        if iibb:  acumular(ret_iibb,   fecha, iibb)
+        sin_fecha = 0
+        for row in datos:
+            desc = str(row.get("Descripción", row.get("Descripcion","venta"))).lower()
+            if any(x in desc for x in ["devolucion","devolución","refund","chargeback"]): continue
+            fecha = (row.get("Fecha de creación") or row.get("Fecha de creacion")
+                     or row.get("Fecha") or "")
+            if not fecha: sin_fecha += 1; continue
+            k = mes_key(fecha)
+            if not k or k in meses_supabase: continue  # ya cubierto por Supabase
+            tasa    = safe_float(row.get("Tasa Pago Nube", 0))
+            cuota_s = safe_float(row.get("Costo de Cuota Simple", 0))
+            cuota_p = safe_float(row.get("Costo de cuotas Pago Nube", 0))
+            iibb    = (safe_float(row.get("Impuestos - IIBB", 0))
+                       or safe_float(row.get("IIBB", 0))
+                       or safe_float(row.get("Impuesto IIBB", 0))
+                       or safe_float(row.get("Impuestos", 0)))
+            com = tasa + cuota_s + cuota_p
+            if com:  comisiones[k] += com
+            if iibb: ret_iibb[k]   += iibb
+        if sin_fecha: log(f"  PagoNube S3: {sin_fecha} registros sin fecha ignorados")
 
-    if sin_fecha: log(f"  PagoNube: {sin_fecha} registros sin fecha ignorados")
     log(f"  PagoNube: {len(comisiones)} meses comisiones, {len(ret_iibb)} meses IIBB")
     return {"com_pagonube": dict(comisiones), "ret_iibb_pn": dict(ret_iibb)}
 
