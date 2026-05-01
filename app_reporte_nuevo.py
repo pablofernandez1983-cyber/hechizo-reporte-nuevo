@@ -537,7 +537,8 @@ def _stock_compute():
     top20               = sorted(variantes, key=lambda v: -v["unidades_90"])[:20]
     candidatos_liquidar = [v for v in variantes if v["stock"] >= 1 and v["unidades_180"] == 0]
 
-    valuacion_total = sum(v["stock"] * v["precio_venta"] for v in variantes)
+    valuacion_total = sum(v["stock"] * v["precio_venta"] for v in variantes
+                         if "GIFT CARD" not in v["nombre"].upper())
 
     # ── 4. Guardar valuación diaria y obtener mes anterior ────────────────
     valuacion_mes_anterior = None
