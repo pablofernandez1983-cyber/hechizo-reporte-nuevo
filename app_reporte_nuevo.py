@@ -539,8 +539,8 @@ def _stock_compute():
 
     valuacion_total      = sum(v["stock"] * v["precio_venta"] for v in variantes
                               if "GIFT CARD" not in v["nombre"].upper())
-    cantidad_valuacion   = sum(1 for v in variantes
-                              if v["stock"] > 0 and "GIFT CARD" not in v["nombre"].upper())
+    cantidad_valuacion   = sum(v["stock"] for v in variantes
+                              if "GIFT CARD" not in v["nombre"].upper())
 
     # ── 4. Guardar valuación diaria y obtener mes anterior ────────────────
     valuacion_mes_anterior = None
