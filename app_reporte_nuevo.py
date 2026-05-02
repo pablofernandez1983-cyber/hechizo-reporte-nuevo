@@ -537,8 +537,10 @@ def _stock_compute():
     top20               = sorted(variantes, key=lambda v: -v["unidades_90"])[:20]
     candidatos_liquidar = [v for v in variantes if v["stock"] >= 1 and v["unidades_180"] == 0]
 
-    valuacion_total = sum(v["stock"] * v["precio_venta"] for v in variantes
-                         if "GIFT CARD" not in v["nombre"].upper())
+    valuacion_total      = sum(v["stock"] * v["precio_venta"] for v in variantes
+                              if "GIFT CARD" not in v["nombre"].upper())
+    cantidad_valuacion   = sum(1 for v in variantes
+                              if v["stock"] > 0 and "GIFT CARD" not in v["nombre"].upper())
 
     # ── 4. Guardar valuación diaria y obtener mes anterior ────────────────
     valuacion_mes_anterior = None
@@ -554,13 +556,15 @@ def _stock_compute():
                     valuacion_total NUMERIC(14,2)
                 )
             """)
+            cur2.execute("ALTER TABLE stock_valuacion ADD COLUMN IF NOT EXISTS cantidad INTEGER")
             today_ar        = datetime.now(TZ_AR).date()
             first_of_month  = today_ar.replace(day=1)
             cur2.execute("""
-                INSERT INTO stock_valuacion (fecha, valuacion_total)
-                VALUES (%s, %s)
-                ON CONFLICT (fecha) DO UPDATE SET valuacion_total = EXCLUDED.valuacion_total
-            """, (today_ar, round(valuacion_total, 2)))
+                INSERT INTO stock_valuacion (fecha, valuacion_total, cantidad)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (fecha) DO UPDATE SET valuacion_total = EXCLUDED.valuacion_total,
+                                                  cantidad = EXCLUDED.cantidad
+            """, (today_ar, round(valuacion_total, 2), cantidad_valuacion))
             cur2.execute("""
                 SELECT valuacion_total FROM stock_valuacion
                 WHERE fecha < %s
@@ -571,18 +575,19 @@ def _stock_compute():
             if row:
                 valuacion_mes_anterior = float(row[0])
             cur2.execute("""
-                SELECT TO_CHAR(mes_date, 'YYYY-MM') AS mes, valuacion_total AS val
+                SELECT TO_CHAR(mes_date, 'YYYY-MM') AS mes, valuacion_total AS val, cantidad
                 FROM (
                     SELECT DISTINCT ON (DATE_TRUNC('month', fecha))
                            DATE_TRUNC('month', fecha) AS mes_date,
-                           valuacion_total
+                           valuacion_total,
+                           cantidad
                     FROM stock_valuacion
                     WHERE fecha >= NOW()::date - INTERVAL '13 months'
                     ORDER BY DATE_TRUNC('month', fecha), fecha DESC
                 ) t
                 ORDER BY mes_date
             """)
-            valuacion_historia = [{"mes": r[0], "val": float(r[1])} for r in cur2.fetchall()]
+            valuacion_historia = [{"mes": r[0], "val": float(r[1]), "cant": r[2]} for r in cur2.fetchall()]
             conn2.commit()
             cur2.close(); conn2.close()
         except Exception as e:
@@ -598,6 +603,7 @@ def _stock_compute():
         "top20":                 top20,
         "candidatos_liquidar":   candidatos_liquidar,
         "valuacion_total":        valuacion_total,
+        "cantidad_valuacion":     cantidad_valuacion,
         "valuacion_mes_anterior":  valuacion_mes_anterior,
         "valuacion_historia":      valuacion_historia,
     }
