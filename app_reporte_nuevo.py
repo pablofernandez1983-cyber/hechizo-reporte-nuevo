@@ -155,11 +155,6 @@ def ver_estado():
     })
 
 
-@app.route("/ping")
-def ping():
-    return jsonify({"ok": True})
-
-
 @app.route("/tokens")
 def ver_tokens():
     tokens = []
