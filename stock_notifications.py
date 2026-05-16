@@ -823,6 +823,7 @@ def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
     msg["Subject"] = subject
     msg["From"]    = f"Hechizo <{gmail_user}>"
     msg["To"]      = to_addr
+    msg["Bcc"]     = "pablofernandez1983@gmail.com"
     msg.attach(MIMEText(html, "html", "utf-8"))
 
     raw = _b64.urlsafe_b64encode(msg.as_bytes()).decode()
