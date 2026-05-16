@@ -15,7 +15,7 @@ from flask import Blueprint, jsonify, redirect, request
 TN_CLIENT_ID     = os.environ.get("TN_APP_CLIENT_ID", "")
 TN_CLIENT_SECRET = os.environ.get("TN_APP_CLIENT_SECRET", "")
 
-BASE_URL         = "https://hechizo-reporte-nuevo-production.up.railway.app"
+BASE_URL         = os.environ.get("BASE_URL", "https://hechizo-reporte-nuevo-production.up.railway.app")
 DEFAULT_TN_SCRIPT_ID = 6218
 
 USER_AGENT   = "HechizoBijou-Stock/1.0 (hechizobijou@gmail.com)"
