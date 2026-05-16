@@ -87,6 +87,13 @@ def _script_matches(script, script_id):
     return str(script.get("script_id") or script.get("id")) == expected
 
 
+def _is_auto_installed_error(detail):
+    if not isinstance(detail, dict):
+        return False
+    message = str(detail.get("message", "")).lower()
+    return "auto installed" in message and "store association" in message
+
+
 def _register_script(store_id, token, script_id=None):
     """Asocia al store el script creado en Partner Portal. Devuelve dict con resultado."""
     script_id = script_id or _tn_script_id()
@@ -109,13 +116,24 @@ def _register_script(store_id, token, script_id=None):
         "query_params": "{}",
     }
     resp = http.post(base, headers=headers, json=payload, timeout=10)
+    detail = _response_detail(resp)
+    if resp.status_code == 422 and _is_auto_installed_error(detail):
+        return {
+            "ok": True,
+            "msg": "Script auto instalado por Tiendanube; no requiere asociacion manual",
+            "created": False,
+            "script_id": script_id,
+            "http_status": resp.status_code,
+            "detail": detail,
+        }
+
     return {
         "ok": resp.ok,
         "msg": "Script asociado",
         "created": resp.ok,
         "script_id": script_id,
         "http_status": resp.status_code,
-        "detail": _response_detail(resp),
+        "detail": detail,
     }
 
 
@@ -157,7 +175,7 @@ def callback():
     except ValueError as exc:
         return jsonify({"ok": False, "store_id": store_id, "error": str(exc)}), 500
 
-    return jsonify({"ok": True, "store_id": store_id, "script": result})
+    return jsonify({"ok": result.get("ok", False), "store_id": store_id, "script": result})
 
 
 @tn_bp.route("/tiendanube/setup-script/<int:store_id>")
