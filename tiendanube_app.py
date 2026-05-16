@@ -4,8 +4,8 @@ tiendanube_app.py — OAuth 2 + registro de scripts para la app de Tiendanube.
 Flujo:
   1. GET /tiendanube/install      → redirige a Tiendanube para autorizar
   2. GET /tiendanube/callback     → intercambia code por token, guarda en DB,
-                                    registra widget-stock.js y widget-ruleta.js
-  3. GET /tiendanube/setup-all/<store_id>  → re-registra ambos widgets (idempotente)
+                                    asocia el script de Partner Portal
+  3. GET /tiendanube/setup-script/<store_id>  → re-asocia el script (idempotente)
 """
 
 import os
@@ -16,7 +16,7 @@ TN_CLIENT_ID     = os.environ.get("TN_APP_CLIENT_ID", "")
 TN_CLIENT_SECRET = os.environ.get("TN_APP_CLIENT_SECRET", "")
 
 BASE_URL         = "https://hechizo-reporte-nuevo-production.up.railway.app"
-WIDGET_STOCK_URL = f"{BASE_URL}/widget-stock.js"
+DEFAULT_TN_SCRIPT_ID = 6218
 
 USER_AGENT   = "HechizoBijou-Stock/1.0 (hechizobijou@gmail.com)"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -63,24 +63,60 @@ def _tn_headers(token):
     }
 
 
-def _register_script(store_id, token, widget_url):
-    """Registra un script tag en el store (idempotente). Devuelve dict con resultado."""
+def _response_detail(resp):
+    if not resp.content:
+        return {}
+    try:
+        return resp.json()
+    except ValueError:
+        return {"raw": resp.text[:300]}
+
+
+def _tn_script_id():
+    raw_script_id = os.environ.get("TN_SCRIPT_ID", "").strip()
+    if not raw_script_id:
+        return DEFAULT_TN_SCRIPT_ID
+    try:
+        return int(raw_script_id)
+    except ValueError as exc:
+        raise ValueError("TN_SCRIPT_ID debe ser un numero entero") from exc
+
+
+def _script_matches(script, script_id):
+    expected = str(script_id)
+    return str(script.get("script_id") or script.get("id")) == expected
+
+
+def _register_script(store_id, token, script_id=None):
+    """Asocia al store el script creado en Partner Portal. Devuelve dict con resultado."""
+    script_id = script_id or _tn_script_id()
     base     = f"https://api.tiendanube.com/v1/{store_id}/scripts"
     headers  = _tn_headers(token)
     existing = http.get(base, headers=headers, timeout=10).json()
     matches  = [s for s in (existing if isinstance(existing, list) else [])
-                if s.get("src") == widget_url]
+                if _script_matches(s, script_id)]
 
     if matches:
-        return {"ok": True, "msg": f"Script ya registrado (id={matches[0]['id']})", "created": False}
+        return {
+            "ok": True,
+            "msg": f"Script ya asociado (id={matches[0].get('id', script_id)})",
+            "created": False,
+            "script_id": script_id,
+        }
 
-    resp = http.post(base, headers=headers, json={
-        "src":   widget_url,
-        "event": "onload",
-        "where": "store",
-    }, timeout=10)
-    return {"ok": resp.ok, "msg": "Script registrado", "created": True,
-            "detail": resp.json() if resp.content else {}}
+    payload = {
+        "script_id": script_id,
+        "query_params": "{}",
+    }
+    resp = http.post(base, headers=headers, json=payload, timeout=10)
+    return {
+        "ok": resp.ok,
+        "msg": "Script asociado",
+        "created": resp.ok,
+        "script_id": script_id,
+        "http_status": resp.status_code,
+        "detail": _response_detail(resp),
+    }
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
@@ -93,7 +129,7 @@ def install():
 
 @tn_bp.route("/tiendanube/callback")
 def callback():
-    """Recibe el code, intercambia por token y registra ambos scripts automáticamente."""
+    """Recibe el code, intercambia por token y asocia el script automáticamente."""
     code = request.args.get("code")
     if not code:
         return jsonify({"error": "code faltante"}), 400
@@ -116,7 +152,10 @@ def callback():
     store_id     = data["user_id"]
 
     _save_token(store_id, access_token)
-    result = _register_script(store_id, access_token, WIDGET_STOCK_URL)
+    try:
+        result = _register_script(store_id, access_token)
+    except ValueError as exc:
+        return jsonify({"ok": False, "store_id": store_id, "error": str(exc)}), 500
 
     return jsonify({"ok": True, "store_id": store_id, "script": result})
 
@@ -126,7 +165,10 @@ def setup_script(store_id):
     token = _get_token(store_id)
     if not token:
         return jsonify({"error": f"No hay token para store_id={store_id}"}), 404
-    return jsonify(_register_script(store_id, token, WIDGET_STOCK_URL))
+    try:
+        return jsonify(_register_script(store_id, token))
+    except ValueError as exc:
+        return jsonify({"ok": False, "store_id": store_id, "error": str(exc)}), 500
 
 
 @tn_bp.route("/tiendanube/list-scripts/<int:store_id>")
