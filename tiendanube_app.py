@@ -15,7 +15,8 @@ from flask import Blueprint, jsonify, redirect, request
 TN_CLIENT_ID     = os.environ.get("TN_APP_CLIENT_ID", "")
 TN_CLIENT_SECRET = os.environ.get("TN_APP_CLIENT_SECRET", "")
 
-BASE_URL         = os.environ.get("BASE_URL", "https://hechizo-reporte-nuevo-production.up.railway.app")
+DEFAULT_BASE_URL = "https://hechizo-reporte-nuevo-production.up.railway.app"
+BASE_URL         = os.environ.get("BASE_URL", DEFAULT_BASE_URL)
 DEFAULT_TN_SCRIPT_ID = 6218
 
 USER_AGENT   = "HechizoBijou-Stock/1.0 (hechizobijou@gmail.com)"
@@ -70,6 +71,13 @@ def _response_detail(resp):
         return resp.json()
     except ValueError:
         return {"raw": resp.text[:300]}
+
+
+def _base_url():
+    value = (BASE_URL or DEFAULT_BASE_URL).strip().rstrip("/")
+    if not value.startswith(("https://", "http://")):
+        value = f"https://{value}"
+    return value
 
 
 def _tn_script_id():
@@ -252,7 +260,7 @@ def setup_webhook(store_id=None):
     if not TN_STORE_ID or not TN_TOKEN:
         return jsonify({"error": "TIENDANUBE_STORE_ID o TIENDANUBE_ACCESS_TOKEN no configurados"}), 500
 
-    webhook_url = f"{BASE_URL}/notify/webhook"
+    webhook_url = f"{_base_url()}/notify/webhook"
     headers     = _tn_headers(TN_TOKEN)
     base        = f"https://api.tiendanube.com/v1/{TN_STORE_ID}/webhooks"
 
