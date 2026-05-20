@@ -723,6 +723,7 @@ def _send_and_mark(pendientes: list) -> dict:
             _send_restock_email(email, product_name, variant_name, product_url)
             sent_ids.append(notif_id)
         except Exception as e:
+            print(f"[MAIL ERROR] {email}: {e}", flush=True)
             errors.append(f"{email}: {e}")
 
     if sent_ids:
@@ -837,3 +838,15 @@ def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
     )
     if not resp.ok:
         raise RuntimeError(f"Gmail API error {resp.status_code}: {resp.text[:200]}")
+
+
+# ── GET /notify/test-gmail  (diagnóstico) ─────────────────────────────────────
+
+@notify_bp.route("/notify/test-gmail", methods=["GET"])
+@cross_origin(origins="*")
+def notify_test_gmail():
+    try:
+        token = _get_gmail_access_token()
+        return jsonify({"ok": True, "msg": "Gmail OAuth OK", "token_len": len(token)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
