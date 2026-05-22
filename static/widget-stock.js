@@ -1,5 +1,5 @@
 (function () {
-  const ENDPOINT = 'https://hechizo-reporte-nuevo-production.up.railway.app/notify';
+  const ENDPOINT = 'https://hechizo-stock-notificacion-production.up.railway.app/notify';
   const STORE_ID = (window.LS && window.LS.store && window.LS.store.id) ? window.LS.store.id : 0;
 
   // ── Estilos ──────────────────────────────────────────────────────────────────

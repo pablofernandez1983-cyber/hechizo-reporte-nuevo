@@ -27,9 +27,6 @@ app.register_blueprint(notify_bp)
 from tiendanube_app import tn_bp
 app.register_blueprint(tn_bp)
 
-from tiendanube_ruleta import ruleta_bp
-app.register_blueprint(ruleta_bp)
-
 S3_BUCKET   = os.environ.get("AWS_S3_BUCKET_NAME", "")
 S3_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", "")
 S3_REGION   = os.environ.get("AWS_DEFAULT_REGION", "auto")
@@ -121,17 +118,6 @@ def _run():
         _estado["ultimo_fin"] = datetime.now(TZ_AR).isoformat()
         _estado["warnings"] = _detectar_warnings()
 
-
-@app.route("/widget-stock.js")
-def widget_js():
-    return send_from_directory('static', 'widget-stock.js',
-                               mimetype='application/javascript')
-
-
-@app.route("/widget-ruleta.js")
-def widget_ruleta_js():
-    return send_from_directory('static', 'widget-ruleta.js',
-                               mimetype='application/javascript')
 
 
 @app.route("/ejecutar", methods=["POST"])
