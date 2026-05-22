@@ -262,7 +262,7 @@ def remove_webhook(store_id=None):
 
     existing = http.get(base, headers=headers, timeout=15).json()
     matches  = [w for w in (existing if isinstance(existing, list) else [])
-                if w.get("url") == webhook_url and w.get("event") == "product/updated"]
+                if w.get("event") == "product/updated"]
 
     deleted = 0
     for w in matches:
@@ -270,7 +270,7 @@ def remove_webhook(store_id=None):
         if resp.ok or resp.status_code == 404:
             deleted += 1
 
-    return jsonify({"ok": True, "eliminados": deleted, "msg": f"{deleted} webhook(s) eliminado(s)"})
+    return jsonify({"ok": True, "eliminados": deleted, "webhooks": matches, "msg": f"{deleted} webhook(s) eliminado(s)"})
 
 
 @tn_bp.route("/tiendanube/setup-webhook")
