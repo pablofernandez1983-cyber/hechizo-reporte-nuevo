@@ -109,13 +109,15 @@ def _ensure_columns():
         return
     try:
         conn = _get_conn()
-        with conn.cursor() as cur:
-            cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ")
-            cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")
-            cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS sku VARCHAR(100)")
-            cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS product_url VARCHAR(500)")
-        conn.commit()
-        conn.close()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ")
+                cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")
+                cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS sku VARCHAR(100)")
+                cur.execute("ALTER TABLE stock_notifications ADD COLUMN IF NOT EXISTS product_url VARCHAR(500)")
+            conn.commit()
+        finally:
+            conn.close()
     except Exception:
         pass
 

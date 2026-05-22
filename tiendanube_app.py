@@ -240,6 +240,39 @@ def test_token(store_id):
     })
 
 
+@tn_bp.route("/tiendanube/remove-webhook")
+@tn_bp.route("/tiendanube/remove-webhook/<int:store_id>")
+def remove_webhook(store_id=None):
+    """Borra todos los webhooks product/updated registrados en Tiendanube."""
+    if store_id:
+        TN_TOKEN    = _get_token(store_id)
+        TN_STORE_ID = str(store_id)
+        if not TN_TOKEN:
+            return jsonify({"error": f"No hay token para store_id={store_id}"}), 404
+    else:
+        TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
+        TN_TOKEN    = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
+
+    if not TN_STORE_ID or not TN_TOKEN:
+        return jsonify({"error": "TIENDANUBE_STORE_ID o TIENDANUBE_ACCESS_TOKEN no configurados"}), 500
+
+    webhook_url = f"{_base_url()}/notify/webhook"
+    headers     = _tn_headers(TN_TOKEN)
+    base        = f"https://api.tiendanube.com/v1/{TN_STORE_ID}/webhooks"
+
+    existing = http.get(base, headers=headers, timeout=15).json()
+    matches  = [w for w in (existing if isinstance(existing, list) else [])
+                if w.get("url") == webhook_url and w.get("event") == "product/updated"]
+
+    deleted = 0
+    for w in matches:
+        resp = http.delete(f"{base}/{w['id']}", headers=headers, timeout=15)
+        if resp.ok or resp.status_code == 404:
+            deleted += 1
+
+    return jsonify({"ok": True, "eliminados": deleted, "msg": f"{deleted} webhook(s) eliminado(s)"})
+
+
 @tn_bp.route("/tiendanube/setup-webhook")
 @tn_bp.route("/tiendanube/setup-webhook/<int:store_id>")
 def setup_webhook(store_id=None):
