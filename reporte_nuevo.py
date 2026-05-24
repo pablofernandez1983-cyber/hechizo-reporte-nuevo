@@ -204,6 +204,17 @@ def get_db():
                 time.sleep(3)
     return None
 
+def close_db():
+    """Cierra la conexión persistente. Llamar al final de main() para que
+    Railway pueda detectar inactividad y escalar el servicio a 0."""
+    global _db_conn
+    if _db_conn is not None:
+        try:
+            _db_conn.close()
+        except Exception:
+            pass
+        _db_conn = None
+
 def db_exec(sql, params=None):
     conn = get_db()
     if not conn: return
@@ -1596,6 +1607,9 @@ def main():
         traceback.print_exc()
         escribir_trigger("ERROR", str(e)[:200])
         raise
+    finally:
+        # Cerrar la conexión persistente para que Railway pueda dormir el servicio
+        close_db()
 
 if __name__ == "__main__":
     main()
