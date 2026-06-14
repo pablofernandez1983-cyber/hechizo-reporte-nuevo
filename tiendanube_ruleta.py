@@ -18,7 +18,7 @@ from flask import Blueprint, jsonify, make_response, redirect, request
 TN_CLIENT_ID     = os.environ.get("TN_RULETA_CLIENT_ID", "")
 TN_CLIENT_SECRET = os.environ.get("TN_RULETA_CLIENT_SECRET", "")
 
-SCRIPT_ID = 6238  # ID del script registrado en el portal de Partners
+SCRIPT_ID = 7428  # ID del script registrado en el portal de Partners
 
 USER_AGENT   = "HechizoBijou-Ruleta/1.0 (hechizobijou@gmail.com)"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -238,8 +238,9 @@ def _register_script(store_id, token):
     base     = f"https://api.tiendanube.com/2025-03/{store_id}/scripts"
     headers  = _tn_headers(token)
     existing = http.get(base, headers=headers, timeout=10).json()
-    matches  = [s for s in (existing if isinstance(existing, list) else [])
-                if s.get("script_id") == SCRIPT_ID]
+    items    = existing.get("result", existing) if isinstance(existing, dict) else existing
+    matches  = [s for s in (items if isinstance(items, list) else [])
+                if s.get("id") == SCRIPT_ID]
 
     if matches:
         return {"ok": True, "msg": f"Script ya activo (id={matches[0]['id']})", "created": False}
@@ -258,8 +259,9 @@ def _remove_script(store_id, token):
     base     = f"https://api.tiendanube.com/2025-03/{store_id}/scripts"
     headers  = _tn_headers(token)
     existing = http.get(base, headers=headers, timeout=10).json()
-    matches  = [s for s in (existing if isinstance(existing, list) else [])
-                if s.get("script_id") == SCRIPT_ID]
+    items    = existing.get("result", existing) if isinstance(existing, dict) else existing
+    matches  = [s for s in (items if isinstance(items, list) else [])
+                if s.get("id") == SCRIPT_ID]
 
     deleted = []
     for s in matches:
