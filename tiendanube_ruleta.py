@@ -22,7 +22,7 @@ SCRIPT_ID = 6238  # ID del script registrado en el portal de Partners
 
 USER_AGENT   = "HechizoBijou-Ruleta/1.0 (hechizobijou@gmail.com)"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-STORE_URL    = os.environ.get("STORE_URL", "https://hechizobijou.mitiendanube.com")
+STORE_URL    = os.environ.get("STORE_URL", "https://hechizo.com.ar")
 
 MAIL_PREMIOS = {
     "HECHIZO10":      ("10% OFF",              "10% de descuento sobre el total de tu compra"),
@@ -49,19 +49,36 @@ def _get_token(store_id):
     return row[0] if row else None
 
 
+def _get_gmail_access_token():
+    import requests as _req
+    client_id     = os.environ.get("GMAIL_CLIENT_ID", "")
+    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "")
+    refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN", "")
+    if not all([client_id, client_secret, refresh_token]):
+        raise RuntimeError("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN no configurados")
+    resp = _req.post("https://oauth2.googleapis.com/token", data={
+        "client_id":     client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type":    "refresh_token",
+    }, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(f"Error obteniendo access token: {resp.text[:200]}")
+    return resp.json()["access_token"]
+
+
 def _enviar_mail_cupon(email, premio):
     """Envía email con el cupón ganado. Diseñado para correr en un thread."""
-    import smtplib
+    import requests as _req
+    import base64 as _b64
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
-    mail_user = os.environ.get("MAIL_USER", "")
-    mail_pass = os.environ.get("MAIL_PASSWORD", "")
-    if not mail_user or not mail_pass or not premio or premio == "nada":
+    if not premio or premio == "nada":
         return
 
     titulo, desc = MAIL_PREMIOS.get(premio, (premio, f"Tu premio: {premio}"))
-    subject = f"⭐ ¡Ganaste {titulo}! Tu cupón de Hechizo Bijou"
+    subject = f"Ganaste {titulo} en Hechizo Bijou"
 
     html = f"""<!DOCTYPE html>
 <html lang="es">
@@ -74,7 +91,7 @@ def _enviar_mail_cupon(email, premio):
   <!-- Header -->
   <tr>
     <td style="background:#1A3A5C;padding:28px 24px;text-align:center;">
-      <div style="color:#C9A227;font-size:20px;letter-spacing:6px;">⭐ ⭐ ⭐</div>
+      <div style="color:#C9A227;font-size:20px;letter-spacing:6px;">&#11088; &#11088; &#11088;</div>
       <div style="color:#ffffff;font-size:22px;font-weight:bold;letter-spacing:3px;margin-top:8px;">HECHIZO BIJOU</div>
       <div style="color:#75AADB;font-size:12px;margin-top:4px;letter-spacing:2px;">BIJOUTERIE &amp; ACCESORIOS</div>
     </td>
@@ -83,55 +100,55 @@ def _enviar_mail_cupon(email, premio):
   <!-- Body -->
   <tr>
     <td style="padding:32px 28px;text-align:center;">
-      <div style="font-size:40px;margin-bottom:8px;">🏆</div>
-      <h1 style="color:#1A3A5C;font-size:22px;margin:0 0 6px;">¡Ganaste {titulo}!</h1>
+      <div style="font-size:40px;margin-bottom:8px;">&#127942;</div>
+      <h1 style="color:#1A3A5C;font-size:22px;margin:0 0 6px;">&#161;Ganaste {titulo}!</h1>
       <p style="color:#666;font-size:14px;margin:0 0 24px;">{desc}</p>
 
       <!-- Coupon code -->
       <div style="background:#f0f7ff;border:2px dashed #75AADB;border-radius:10px;padding:20px 24px;margin:0 auto 24px;">
-        <div style="color:#999;font-size:11px;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">Tu código de cupón</div>
+        <div style="color:#999;font-size:11px;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">Tu c&#243;digo de cup&#243;n</div>
         <div style="font-size:30px;font-weight:bold;color:#1A3A5C;letter-spacing:4px;font-family:Courier,monospace;">{premio}</div>
       </div>
 
       <!-- Instructions -->
       <div style="text-align:left;background:#fafafa;border-radius:8px;padding:20px 24px;margin-bottom:24px;">
-        <div style="color:#1A3A5C;font-weight:bold;font-size:14px;margin-bottom:14px;">📋 Cómo usar tu cupón:</div>
+        <div style="color:#1A3A5C;font-weight:bold;font-size:14px;margin-bottom:14px;">C&#243;mo usar tu cup&#243;n:</div>
         <table cellpadding="0" cellspacing="0" width="100%">
           <tr>
             <td style="width:30px;vertical-align:top;padding:5px 0;">
               <span style="background:#75AADB;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-block;text-align:center;font-size:12px;line-height:22px;font-weight:bold;">1</span>
             </td>
-            <td style="padding:5px 0;font-size:13px;color:#444;">Visitá nuestra tienda y elegí tus productos favoritos</td>
+            <td style="padding:5px 0 5px 8px;font-size:13px;color:#444;">Visit&#225; nuestra tienda y eleg&#237; tus productos favoritos</td>
           </tr>
           <tr>
             <td style="width:30px;vertical-align:top;padding:5px 0;">
               <span style="background:#75AADB;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-block;text-align:center;font-size:12px;line-height:22px;font-weight:bold;">2</span>
             </td>
-            <td style="padding:5px 0;font-size:13px;color:#444;">Agregá los productos al carrito</td>
+            <td style="padding:5px 0 5px 8px;font-size:13px;color:#444;">Agreg&#225; los productos al carrito</td>
           </tr>
           <tr>
             <td style="width:30px;vertical-align:top;padding:5px 0;">
               <span style="background:#75AADB;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-block;text-align:center;font-size:12px;line-height:22px;font-weight:bold;">3</span>
             </td>
-            <td style="padding:5px 0;font-size:13px;color:#444;"><strong>Antes de finalizar el pago</strong>, buscá el campo <em>"¿Tenés un cupón de descuento?"</em> e ingresá el código <strong style="color:#1A3A5C;">{premio}</strong></td>
+            <td style="padding:5px 0 5px 8px;font-size:13px;color:#444;"><strong>Antes de finalizar el pago</strong>, busc&#225; el campo <em>&#34;&#191;Ten&#233;s un cup&#243;n de descuento?&#34;</em> e ingres&#225; el c&#243;digo <strong style="color:#1A3A5C;">{premio}</strong></td>
           </tr>
           <tr>
             <td style="width:30px;vertical-align:top;padding:5px 0;">
               <span style="background:#C9A227;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-block;text-align:center;font-size:12px;line-height:22px;font-weight:bold;">4</span>
             </td>
-            <td style="padding:5px 0;font-size:13px;color:#444;">¡El descuento se aplica automáticamente! Completá tu compra y listo 🎉</td>
+            <td style="padding:5px 0 5px 8px;font-size:13px;color:#444;">&#161;El descuento se aplica autom&#225;ticamente! Complet&#225; tu compra y listo</td>
           </tr>
         </table>
       </div>
 
       <!-- CTA -->
       <a href="{STORE_URL}" style="display:inline-block;background:#1A3A5C;color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:8px;font-size:14px;font-weight:bold;letter-spacing:1px;margin-bottom:24px;">
-        IR A LA TIENDA →
+        IR A LA TIENDA
       </a>
 
       <!-- Terms -->
       <p style="color:#aaa;font-size:11px;margin:0;line-height:1.8;">
-        * Válido por 7 días &nbsp;·&nbsp; Para compras mayores a $50.000 &nbsp;·&nbsp; Un solo uso por cliente
+        * V&#225;lido por 7 d&#237;as &nbsp;&#183;&nbsp; Para compras mayores a $50.000 &nbsp;&#183;&nbsp; Un solo uso por cliente
       </p>
     </td>
   </tr>
@@ -140,7 +157,7 @@ def _enviar_mail_cupon(email, premio):
   <tr>
     <td style="background:#1A3A5C;padding:16px 24px;text-align:center;">
       <div style="color:#75AADB;font-size:12px;line-height:1.8;">
-        © 2025 Hechizo Bijou · Bijouterie &amp; Accesorios<br>
+        &#169; 2025 Hechizo Bijou &nbsp;&#183;&nbsp; Bijouterie &amp; Accesorios<br>
         hechizobijou@gmail.com
       </div>
     </td>
@@ -152,21 +169,29 @@ def _enviar_mail_cupon(email, premio):
 </body>
 </html>"""
 
+    gmail_user = os.environ.get("GMAIL_USER", "hechizobijou@gmail.com")
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"Hechizo Bijou <{mail_user}>"
+    msg["From"]    = f"Hechizo Bijou <{gmail_user}>"
     msg["To"]      = email
+    msg["Bcc"]     = "pablofernandez1983@gmail.com"
     msg.attach(MIMEText(html, "html", "utf-8"))
 
+    raw = _b64.urlsafe_b64encode(msg.as_bytes()).decode()
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(mail_user, mail_pass)
-            server.sendmail(mail_user, [email], msg.as_string())
-        print(f"[ruleta] Mail enviado a {email} ({premio})")
+        access_token = _get_gmail_access_token()
+        resp = _req.post(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json={"raw": raw},
+            timeout=15,
+        )
+        if resp.ok:
+            print(f"[ruleta] Mail enviado a {email} ({premio})", flush=True)
+        else:
+            print(f"[ruleta] Gmail API error {resp.status_code}: {resp.text[:200]}", flush=True)
     except Exception as exc:
-        print(f"[ruleta] Error enviando mail a {email}: {exc}")
+        print(f"[ruleta] Error enviando mail a {email}: {exc}", flush=True)
 
 
 def _save_email(email, store_id, premio):
