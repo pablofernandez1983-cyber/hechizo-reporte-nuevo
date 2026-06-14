@@ -11,6 +11,7 @@ Flujo:
 """
 
 import os
+import threading
 import requests as http
 from flask import Blueprint, jsonify, make_response, redirect, request
 
@@ -21,6 +22,15 @@ SCRIPT_ID = 6238  # ID del script registrado en el portal de Partners
 
 USER_AGENT   = "HechizoBijou-Ruleta/1.0 (hechizobijou@gmail.com)"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+STORE_URL    = os.environ.get("STORE_URL", "https://hechizobijou.mitiendanube.com")
+
+MAIL_PREMIOS = {
+    "HECHIZO10":      ("10% OFF",              "10% de descuento sobre el total de tu compra"),
+    "HECHIZO15":      ("15% OFF",              "15% de descuento sobre el total de tu compra"),
+    "HECHIZO4000":    ("$4.000 de descuento",  "$4.000 de descuento sobre el total de tu compra"),
+    "HECHIZOENV":     ("Envío Gratis",         "Envío completamente gratis, sin costo adicional"),
+    "HECHIZOPULSERA": ("Pulsera de Argentina", "Una Pulsera de Argentina incluida en tu pedido, sin cargo"),
+}
 
 ruleta_bp = Blueprint("tiendanube_ruleta", __name__)
 
@@ -37,6 +47,126 @@ def _get_token(store_id):
     finally:
         conn.close()
     return row[0] if row else None
+
+
+def _enviar_mail_cupon(email, premio):
+    """Envía email con el cupón ganado. Diseñado para correr en un thread."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    mail_user = os.environ.get("MAIL_USER", "")
+    mail_pass = os.environ.get("MAIL_PASSWORD", "")
+    if not mail_user or not mail_pass or not premio or premio == "nada":
+        return
+
+    titulo, desc = MAIL_PREMIOS.get(premio, (premio, f"Tu premio: {premio}"))
+    subject = f"⭐ ¡Ganaste {titulo}! Tu cupón de Hechizo Bijou"
+
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f8fc;font-family:Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f8fc;padding:20px 0;">
+<tr><td align="center">
+<table width="100%" style="max-width:520px;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.08);">
+
+  <!-- Header -->
+  <tr>
+    <td style="background:#1A3A5C;padding:28px 24px;text-align:center;">
+      <div style="color:#C9A227;font-size:20px;letter-spacing:6px;">⭐ ⭐ ⭐</div>
+      <div style="color:#ffffff;font-size:22px;font-weight:bold;letter-spacing:3px;margin-top:8px;">HECHIZO BIJOU</div>
+      <div style="color:#75AADB;font-size:12px;margin-top:4px;letter-spacing:2px;">BIJOUTERIE &amp; ACCESORIOS</div>
+    </td>
+  </tr>
+
+  <!-- Body -->
+  <tr>
+    <td style="padding:32px 28px;text-align:center;">
+      <div style="font-size:40px;margin-bottom:8px;">🏆</div>
+      <h1 style="color:#1A3A5C;font-size:22px;margin:0 0 6px;">¡Ganaste {titulo}!</h1>
+      <p style="color:#666;font-size:14px;margin:0 0 24px;">{desc}</p>
+
+      <!-- Coupon code -->
+      <div style="background:#f0f7ff;border:2px dashed #75AADB;border-radius:10px;padding:20px 24px;margin:0 auto 24px;">
+        <div style="color:#999;font-size:11px;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">Tu código de cupón</div>
+        <div style="font-size:30px;font-weight:bold;color:#1A3A5C;letter-spacing:4px;font-family:Courier,monospace;">{premio}</div>
+      </div>
+
+      <!-- Instructions -->
+      <div style="text-align:left;background:#fafafa;border-radius:8px;padding:20px 24px;margin-bottom:24px;">
+        <div style="color:#1A3A5C;font-weight:bold;font-size:14px;margin-bottom:14px;">📋 Cómo usar tu cupón:</div>
+        <table cellpadding="0" cellspacing="0" width="100%">
+          <tr>
+            <td style="width:30px;vertical-align:top;padding:5px 0;">
+              <span style="background:#75AADB;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-block;text-align:center;font-size:12px;line-height:22px;font-weight:bold;">1</span>
+            </td>
+            <td style="padding:5px 0;font-size:13px;color:#444;">Visitá nuestra tienda y elegí tus productos favoritos</td>
+          </tr>
+          <tr>
+            <td style="width:30px;vertical-align:top;padding:5px 0;">
+              <span style="background:#75AADB;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-block;text-align:center;font-size:12px;line-height:22px;font-weight:bold;">2</span>
+            </td>
+            <td style="padding:5px 0;font-size:13px;color:#444;">Agregá los productos al carrito</td>
+          </tr>
+          <tr>
+            <td style="width:30px;vertical-align:top;padding:5px 0;">
+              <span style="background:#75AADB;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-block;text-align:center;font-size:12px;line-height:22px;font-weight:bold;">3</span>
+            </td>
+            <td style="padding:5px 0;font-size:13px;color:#444;"><strong>Antes de finalizar el pago</strong>, buscá el campo <em>"¿Tenés un cupón de descuento?"</em> e ingresá el código <strong style="color:#1A3A5C;">{premio}</strong></td>
+          </tr>
+          <tr>
+            <td style="width:30px;vertical-align:top;padding:5px 0;">
+              <span style="background:#C9A227;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-block;text-align:center;font-size:12px;line-height:22px;font-weight:bold;">4</span>
+            </td>
+            <td style="padding:5px 0;font-size:13px;color:#444;">¡El descuento se aplica automáticamente! Completá tu compra y listo 🎉</td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- CTA -->
+      <a href="{STORE_URL}" style="display:inline-block;background:#1A3A5C;color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:8px;font-size:14px;font-weight:bold;letter-spacing:1px;margin-bottom:24px;">
+        IR A LA TIENDA →
+      </a>
+
+      <!-- Terms -->
+      <p style="color:#aaa;font-size:11px;margin:0;line-height:1.8;">
+        * Válido por 7 días &nbsp;·&nbsp; Para compras mayores a $50.000 &nbsp;·&nbsp; Un solo uso por cliente
+      </p>
+    </td>
+  </tr>
+
+  <!-- Footer -->
+  <tr>
+    <td style="background:#1A3A5C;padding:16px 24px;text-align:center;">
+      <div style="color:#75AADB;font-size:12px;line-height:1.8;">
+        © 2025 Hechizo Bijou · Bijouterie &amp; Accesorios<br>
+        hechizobijou@gmail.com
+      </div>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = f"Hechizo Bijou <{mail_user}>"
+    msg["To"]      = email
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(mail_user, mail_pass)
+            server.sendmail(mail_user, [email], msg.as_string())
+        print(f"[ruleta] Mail enviado a {email} ({premio})")
+    except Exception as exc:
+        print(f"[ruleta] Error enviando mail a {email}: {exc}")
 
 
 def _save_email(email, store_id, premio):
@@ -138,6 +268,7 @@ def suscribir():
 
     try:
         _save_email(email, store_id, premio)
+        threading.Thread(target=_enviar_mail_cupon, args=(email, premio), daemon=True).start()
         r.set_data(jsonify({"ok": True}).get_data())
         r.content_type = "application/json"
         return r, 200
