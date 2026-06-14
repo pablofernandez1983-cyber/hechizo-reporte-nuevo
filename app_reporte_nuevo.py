@@ -27,6 +27,15 @@ app.register_blueprint(notify_bp)
 from tiendanube_app import tn_bp
 app.register_blueprint(tn_bp)
 
+from tiendanube_ruleta import ruleta_bp
+app.register_blueprint(ruleta_bp)
+
+@app.after_request
+def no_cache_widget(response):
+    if request.path == "/static/widget-ruleta.js":
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 S3_BUCKET   = os.environ.get("AWS_S3_BUCKET_NAME", "")
 S3_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", "")
 S3_REGION   = os.environ.get("AWS_DEFAULT_REGION", "auto")
