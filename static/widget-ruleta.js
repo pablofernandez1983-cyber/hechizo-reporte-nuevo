@@ -2,7 +2,7 @@
   'use strict';
 
   const COOKIE   = 'hb_ruleta_v1';
-  const ENDPOINT = 'https://hechizo-reporte-nuevo-production.up.railway.app/ruleta/suscribir';
+  const ENDPOINT = 'https://hechizo-reporte-nuevo-production.up.railway.app/ruleta/participar';
 
   if (document.getElementById('hb-overlay')) return;
   if (document.cookie.split(';').some(function (c) { return c.trim().startsWith(COOKIE + '='); })) return;
@@ -34,6 +34,7 @@
     '#hb-email::placeholder{color:#90B0D0}',
     '#hb-email:focus{border-color:#75AADB;box-shadow:0 0 0 3px rgba(117,170,219,.15)}',
     '#hb-email.hb-valid{border-color:#2A5A9C}',
+    '#hb-email-error{display:none;color:#b42318;font-size:10px;text-align:center;margin:6px 0 8px;line-height:1.4}',
     '#hb-spin-btn{display:block;width:100%;background:linear-gradient(135deg,#1A3A5C,#2A5A9C);color:#fff;border:none;padding:13px 0;font-family:"Montserrat",sans-serif;font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;cursor:pointer;border-radius:50px;margin-bottom:8px;transition:transform .15s,box-shadow .15s;box-shadow:0 4px 20px rgba(0,60,120,.3)}',
     '#hb-spin-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 28px rgba(0,60,120,.42)}',
     '#hb-spin-btn:disabled{opacity:.35;cursor:default;transform:none;box-shadow:none}',
@@ -81,6 +82,7 @@
           '</div>' +
           '<div class="hb-email-wrap">' +
             '<input id="hb-email" type="email" placeholder="Tu email para recibir el cupón" autocomplete="email">' +
+            '<div id="hb-email-error"></div>' +
           '</div>' +
           '<button id="hb-spin-btn" disabled>⚽ ¡Girar la ruleta!</button>' +
           '<p class="hb-legal">Un solo uso · Válido en tu próxima compra · No acumulable<br>* Aplica en compras mayores a $50.000</p>' +
@@ -150,19 +152,29 @@
   }
 
   // ── Spin ──────────────────────────────────────────────────────────────────────
-  function hbPickWinner() {
-    var idx;
-    do { idx = Math.floor(Math.random() * N); } while (HB_SEG[idx].fake);
-    return idx;
-  }
-
   function hbGirar() {
     if (hbSpinning) return;
     hbSpinning = true;
-    document.getElementById('hb-spin-btn').disabled = true;
+    var btn = document.getElementById('hb-spin-btn');
+    btn.disabled = true;
+    btn.textContent = 'Verificando...';
     document.getElementById('hb-email').disabled = true;
+    hbSetError('');
 
-    var winner   = hbPickWinner();
+    hbReservarParticipacion(hbEmail).then(function (premio) {
+      var winner = HB_SEG.findIndex(function (seg) { return seg.codigo === premio; });
+      if (winner < 0) throw new Error('Premio inválido');
+      hbAnimarGiro(winner);
+    }).catch(function (err) {
+      hbSpinning = false;
+      document.getElementById('hb-email').disabled = false;
+      btn.disabled = false;
+      btn.textContent = '⚽ ¡Girar la ruleta!';
+      hbSetError(err.message || 'No pudimos validar tu participación. Intentá nuevamente.');
+    });
+  }
+
+  function hbAnimarGiro(winner) {
     // extra DEBE ser entero: extra no-entero hace que el segmento ganador quede ~180° girado
     var extra    = 5 + Math.floor(Math.random() * 4); // 5, 6, 7 u 8 vueltas completas
     var offset   = (Math.random() - 0.5) * ARC * 0.4; // variación dentro del segmento
@@ -180,23 +192,33 @@
         hbAng = angFinal;
         hbSpinning = false;
         var seg = HB_SEG[winner];
-        hbEnviarEmail(hbEmail, seg.codigo);
         hbShowResult(seg);
         hbSetCookie(COOKIE, '1', 365);
       }
     })(t0);
   }
 
-  // ── Captura de email ──────────────────────────────────────────────────────────
-  function hbEnviarEmail(email, premio) {
-    try {
-      var storeId = (window.LS && window.LS.store && window.LS.store.id) || null;
-      fetch(ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email, premio: premio, store_id: storeId }),
+  // ── Reserva de participación ──────────────────────────────────────────────────
+  function hbReservarParticipacion(email) {
+    var storeId = (window.LS && window.LS.store && window.LS.store.id) || null;
+    return fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, store_id: storeId }),
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (data) {
+        if (!response.ok) {
+          throw new Error(data.error || 'No pudimos validar tu participación. Intentá nuevamente.');
+        }
+        return data.premio;
       });
-    } catch (_) {}
+    });
+  }
+
+  function hbSetError(message) {
+    var error = document.getElementById('hb-email-error');
+    error.textContent = message;
+    error.style.display = message ? 'block' : 'none';
   }
 
   // ── Result ────────────────────────────────────────────────────────────────────
@@ -297,6 +319,7 @@
     hbEmail = this.value.trim();
     var valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(hbEmail);
     this.classList.toggle('hb-valid', valid);
+    hbSetError('');
     document.getElementById('hb-spin-btn').disabled = !valid;
   });
 

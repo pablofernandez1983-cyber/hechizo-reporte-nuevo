@@ -11,6 +11,7 @@ Flujo:
 """
 
 import os
+import secrets
 import threading
 import requests as http
 from flask import Blueprint, jsonify, make_response, redirect, request
@@ -31,6 +32,8 @@ MAIL_PREMIOS = {
     "HECHIZOENV":     ("Envío Gratis",         "Envío completamente gratis, sin costo adicional"),
     "HECHIZOPULSERA": ("Pulsera de Argentina", "Una Pulsera de Argentina incluida en tu pedido, sin cargo"),
 }
+
+RULETA_PREMIOS = tuple(MAIL_PREMIOS)
 
 ruleta_bp = Blueprint("tiendanube_ruleta", __name__)
 
@@ -194,16 +197,27 @@ def _enviar_mail_cupon(email, premio):
         print(f"[ruleta] Error enviando mail a {email}: {exc}", flush=True)
 
 
-def _save_email(email, store_id, premio):
+def _reserve_email(email, store_id, premio):
+    """Registra una sola participacion por email, incluso entre requests simultaneos."""
     import psycopg2
+    normalized_email = email.lower().strip()
     conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (normalized_email,))
+            cur.execute(
+                "SELECT 1 FROM ruleta_emails WHERE lower(trim(email)) = %s LIMIT 1",
+                (normalized_email,),
+            )
+            if cur.fetchone():
+                conn.rollback()
+                return False
             cur.execute("""
                 INSERT INTO ruleta_emails (email, store_id, premio)
                 VALUES (%s, %s, %s)
-            """, (email.lower().strip(), store_id, premio))
+            """, (normalized_email, store_id, premio))
         conn.commit()
+        return True
     finally:
         conn.close()
 
@@ -313,13 +327,47 @@ def _remove_script(store_id, token):
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
 
-@ruleta_bp.route("/ruleta/suscribir", methods=["POST", "OPTIONS"])
-def suscribir():
-    """Guarda el email capturado por el widget de la ruleta."""
+def _cors_response(payload=None):
     r = make_response()
     r.headers["Access-Control-Allow-Origin"] = "*"
     r.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
     r.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    if payload is not None:
+        r.set_data(jsonify(payload).get_data())
+        r.content_type = "application/json"
+    return r
+
+
+@ruleta_bp.route("/ruleta/participar", methods=["POST", "OPTIONS"])
+def participar():
+    """Reserva el email y decide el premio antes de permitir el giro."""
+    if request.method == "OPTIONS":
+        return _cors_response(), 204
+
+    data     = request.get_json(silent=True) or {}
+    email    = (data.get("email") or "").strip()
+    store_id = data.get("store_id")
+
+    if not email or "@" not in email:
+        return _cors_response({"error": "email inválido"}), 400
+
+    try:
+        premio = secrets.choice(RULETA_PREMIOS)
+        if not _reserve_email(email, store_id, premio):
+            return _cors_response({
+                "error": "Este email ya participó",
+                "already_participated": True,
+            }), 409
+        threading.Thread(target=_enviar_mail_cupon, args=(email, premio), daemon=True).start()
+        return _cors_response({"ok": True, "premio": premio}), 200
+    except Exception as e:
+        return _cors_response({"error": str(e)[:200]}), 500
+
+
+@ruleta_bp.route("/ruleta/suscribir", methods=["POST", "OPTIONS"])
+def suscribir():
+    """Compatibilidad con versiones anteriores del widget."""
+    r = _cors_response()
 
     if request.method == "OPTIONS":
         return r, 204
@@ -335,15 +383,15 @@ def suscribir():
         return r, 400
 
     try:
-        _save_email(email, store_id, premio)
+        if not _reserve_email(email, store_id, premio):
+            return _cors_response({
+                "error": "Este email ya participó",
+                "already_participated": True,
+            }), 409
         threading.Thread(target=_enviar_mail_cupon, args=(email, premio), daemon=True).start()
-        r.set_data(jsonify({"ok": True}).get_data())
-        r.content_type = "application/json"
-        return r, 200
+        return _cors_response({"ok": True}), 200
     except Exception as e:
-        r.set_data(jsonify({"error": str(e)[:200]}).get_data())
-        r.content_type = "application/json"
-        return r, 500
+        return _cors_response({"error": str(e)[:200]}), 500
 
 
 @ruleta_bp.route("/ruleta/install")
