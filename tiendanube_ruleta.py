@@ -78,7 +78,7 @@ def _enviar_mail_cupon(email, premio):
         return
 
     titulo, desc = MAIL_PREMIOS.get(premio, (premio, f"Tu premio: {premio}"))
-    subject = f"Ganaste {titulo} en Hechizo Bijou"
+    subject = f"Ganaste {titulo} en Hechizo"
 
     html = f"""<!DOCTYPE html>
 <html lang="es">
@@ -92,8 +92,8 @@ def _enviar_mail_cupon(email, premio):
   <tr>
     <td style="background:#1A3A5C;padding:28px 24px;text-align:center;">
       <div style="color:#C9A227;font-size:20px;letter-spacing:6px;">&#11088; &#11088; &#11088;</div>
-      <div style="color:#ffffff;font-size:22px;font-weight:bold;letter-spacing:3px;margin-top:8px;">HECHIZO BIJOU</div>
-      <div style="color:#75AADB;font-size:12px;margin-top:4px;letter-spacing:2px;">BIJOUTERIE &amp; ACCESORIOS</div>
+      <div style="color:#ffffff;font-size:22px;font-weight:bold;letter-spacing:3px;margin-top:8px;">HECHIZO</div>
+      <div style="color:#75AADB;font-size:12px;margin-top:4px;letter-spacing:2px;">PROTEG&#201; TU ENERG&#205;A</div>
     </td>
   </tr>
 
@@ -157,7 +157,7 @@ def _enviar_mail_cupon(email, premio):
   <tr>
     <td style="background:#1A3A5C;padding:16px 24px;text-align:center;">
       <div style="color:#75AADB;font-size:12px;line-height:1.8;">
-        &#169; 2025 Hechizo Bijou &nbsp;&#183;&nbsp; Bijouterie &amp; Accesorios<br>
+        &#169; 2026 Hechizo &nbsp;&#183;&nbsp; Proteg&#233; tu energ&#237;a<br>
         hechizobijou@gmail.com
       </div>
     </td>
@@ -172,7 +172,7 @@ def _enviar_mail_cupon(email, premio):
     gmail_user = os.environ.get("GMAIL_USER", "hechizobijou@gmail.com")
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"Hechizo Bijou <{gmail_user}>"
+    msg["From"]    = f"Hechizo <{gmail_user}>"
     msg["To"]      = email
     msg["Bcc"]     = "pablofernandez1983@gmail.com"
     msg.attach(MIMEText(html, "html", "utf-8"))
