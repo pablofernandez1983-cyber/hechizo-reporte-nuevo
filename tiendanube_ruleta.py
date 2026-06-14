@@ -149,9 +149,14 @@ def _enviar_mail_cupon(email, premio):
         IR A LA TIENDA
       </a>
 
+      <!-- Minimum purchase -->
+      <div style="background:#e8f4ff;border:2px solid #75AADB;border-radius:8px;padding:12px 16px;margin:0 0 14px;color:#1A3A5C;font-size:14px;font-weight:bold;line-height:1.5;">
+        Este beneficio aplica en compras mayores a $50.000
+      </div>
+
       <!-- Terms -->
       <p style="color:#aaa;font-size:11px;margin:0;line-height:1.8;">
-        * V&#225;lido por 7 d&#237;as &nbsp;&#183;&nbsp; Para compras mayores a $50.000 &nbsp;&#183;&nbsp; Un solo uso por cliente
+        V&#225;lido por 7 d&#237;as &nbsp;&#183;&nbsp; Un solo uso por cliente &nbsp;&#183;&nbsp; No acumulable
       </p>
     </td>
   </tr>

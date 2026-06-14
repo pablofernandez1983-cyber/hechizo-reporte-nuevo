@@ -39,6 +39,7 @@
     '#hb-spin-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 28px rgba(0,60,120,.42)}',
     '#hb-spin-btn:disabled{opacity:.35;cursor:default;transform:none;box-shadow:none}',
     '.hb-legal{font-size:9px;font-weight:300;letter-spacing:.6px;color:#6080A0;text-align:center;line-height:1.6;margin-bottom:0}',
+    '.hb-minimum{background:#e8f4ff;border:1.5px solid #75AADB;border-radius:10px;padding:8px 12px;margin:0 0 7px;color:#1A3A5C;font-family:"Montserrat",sans-serif;font-size:12px;font-weight:700;letter-spacing:.3px;text-align:center;line-height:1.35}',
     '#hb-no-gracias{display:block;width:100%;background:none;border:none;padding:7px 0 0;font-size:9px;letter-spacing:.8px;color:#9AB0C8;text-align:center;cursor:pointer;text-decoration:underline;text-underline-offset:2px;font-family:"Montserrat",sans-serif}',
     '#hb-no-gracias:hover{color:#5A7A9A}',
     '#hb-close{position:absolute;top:12px;right:14px;background:#ffffff22;border:none;color:#fff;font-size:15px;cursor:pointer;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;z-index:10;transition:background .2s}',
@@ -85,7 +86,8 @@
             '<div id="hb-email-error"></div>' +
           '</div>' +
           '<button id="hb-spin-btn" disabled>⚽ ¡Girar la ruleta!</button>' +
-          '<p class="hb-legal">Un solo uso · Válido en tu próxima compra · No acumulable<br>* Aplica en compras mayores a $50.000</p>' +
+          '<div class="hb-minimum">Aplica en compras mayores a $50.000</div>' +
+          '<p class="hb-legal">Un solo uso · Válido en tu próxima compra · No acumulable</p>' +
           '<button id="hb-no-gracias">No quiero participar</button>' +
         '</div>' +
         '<div id="hb-result"></div>' +
@@ -222,7 +224,8 @@
   }
 
   // ── Result ────────────────────────────────────────────────────────────────────
-  var LEGAL_RES = '<p class="hb-legal" style="margin-top:6px">Válido 7 días · Un solo uso · No acumulable · *Compra mínima $50.000</p>';
+  var LEGAL_RES = '<div class="hb-minimum">Aplica en compras mayores a $50.000</div>' +
+    '<p class="hb-legal">Válido 7 días · Un solo uso · No acumulable</p>';
 
   function hbShowResult(seg) {
     var res  = document.getElementById('hb-result');
