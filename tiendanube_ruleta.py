@@ -233,6 +233,25 @@ def _tn_headers(token):
     }
 
 
+def _script_matches(script):
+    expected = str(SCRIPT_ID)
+    return str(script.get("script_id") or script.get("id")) == expected
+
+
+def _response_detail(resp):
+    try:
+        return resp.json()
+    except ValueError:
+        return resp.text[:300]
+
+
+def _is_auto_installed_error(detail):
+    if not isinstance(detail, dict):
+        return False
+    message = str(detail.get("message", "")).lower()
+    return "auto installed" in message and "store association" in message
+
+
 def _register_script(store_id, token):
     """Activa el script de la ruleta en el store (idempotente)."""
     base     = f"https://api.tiendanube.com/2025-03/{store_id}/scripts"
@@ -240,18 +259,40 @@ def _register_script(store_id, token):
     existing = http.get(base, headers=headers, timeout=10).json()
     items    = existing.get("result", existing) if isinstance(existing, dict) else existing
     matches  = [s for s in (items if isinstance(items, list) else [])
-                if s.get("id") == SCRIPT_ID]
+                if _script_matches(s)]
 
     if matches:
-        return {"ok": True, "msg": f"Script ya activo (id={matches[0]['id']})", "created": False}
+        return {
+            "ok": True,
+            "msg": f"Script ya activo (id={matches[0].get('id', SCRIPT_ID)})",
+            "created": False,
+            "script_id": SCRIPT_ID,
+        }
 
     resp = http.post(base, headers=headers, json={
         "script_id": SCRIPT_ID,
         "where":     "store",
         "event":     "onfirstinteraction",
     }, timeout=10)
-    return {"ok": resp.ok, "msg": "Script activado", "created": True,
-            "detail": resp.json() if resp.content else {}}
+    detail = _response_detail(resp)
+    if resp.status_code == 422 and _is_auto_installed_error(detail):
+        return {
+            "ok": True,
+            "msg": "Script auto instalado por Tiendanube",
+            "created": False,
+            "script_id": SCRIPT_ID,
+            "http_status": resp.status_code,
+            "detail": detail,
+        }
+
+    return {
+        "ok": resp.ok,
+        "msg": "Script activado",
+        "created": resp.ok,
+        "script_id": SCRIPT_ID,
+        "http_status": resp.status_code,
+        "detail": detail,
+    }
 
 
 def _remove_script(store_id, token):
@@ -261,7 +302,7 @@ def _remove_script(store_id, token):
     existing = http.get(base, headers=headers, timeout=10).json()
     items    = existing.get("result", existing) if isinstance(existing, dict) else existing
     matches  = [s for s in (items if isinstance(items, list) else [])
-                if s.get("id") == SCRIPT_ID]
+                if _script_matches(s)]
 
     deleted = []
     for s in matches:
@@ -320,7 +361,7 @@ def callback():
 
     resp = http.post(
         "https://www.tiendanube.com/apps/authorize/token",
-        json={
+        data={
             "client_id":     TN_CLIENT_ID,
             "client_secret": TN_CLIENT_SECRET,
             "grant_type":    "authorization_code",
@@ -337,8 +378,8 @@ def callback():
 
     _save_token(store_id, access_token)
 
-    # El script se activa automáticamente en Tiendanube al completar el OAuth
-    return jsonify({"ok": True, "store_id": store_id})
+    result = _register_script(store_id, access_token)
+    return jsonify({"ok": result.get("ok", False), "store_id": store_id, "script": result})
 
 
 @ruleta_bp.route("/ruleta/setup-script/<int:store_id>")
