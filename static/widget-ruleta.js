@@ -1,7 +1,8 @@
 (function () {
   'use strict';
 
-  const COOKIE = 'hb_ruleta_v1';
+  const COOKIE   = 'hb_ruleta_v1';
+  const ENDPOINT = 'https://hechizo-reporte-nuevo-production.up.railway.app/ruleta/suscribir';
 
   if (document.getElementById('hb-overlay')) return;
   if (document.cookie.split(';').some(function (c) { return c.trim().startsWith(COOKIE + '='); })) return;
@@ -9,53 +10,54 @@
   // ── Google Fonts ──────────────────────────────────────────────────────────────
   var fontLink = document.createElement('link');
   fontLink.rel = 'stylesheet';
-  fontLink.href = 'https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400;1,600&family=Jost:wght@200;300;400&display=swap';
+  fontLink.href = 'https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Montserrat:wght@600;700;800&display=swap';
   document.head.appendChild(fontLink);
 
   // ── Estilos ───────────────────────────────────────────────────────────────────
   var style = document.createElement('style');
   style.textContent = [
-    '#hb-overlay{position:fixed;inset:0;background:rgba(40,20,55,.70);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);z-index:99999;display:none;align-items:center;justify-content:center;padding:16px;animation:hbFade .35s ease}',
+    '#hb-overlay{position:fixed;inset:0;background:rgba(10,35,75,.75);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);z-index:99999;display:none;align-items:center;justify-content:center;padding:12px;animation:hbFade .35s ease}',
     '@keyframes hbFade{from{opacity:0}to{opacity:1}}',
-    '#hb-modal{background:#fdf8ff;border-radius:20px;width:100%;max-width:440px;max-height:96vh;overflow-y:auto;position:relative;box-shadow:0 30px 80px rgba(80,30,110,.3),0 0 0 1px #e2c8f022;animation:hbUp .42s cubic-bezier(.22,1,.36,1)}',
+    '#hb-modal{background:#f0f8ff;border-radius:20px;width:100%;max-width:420px;max-height:calc(100vh - 24px);overflow-y:auto;position:relative;box-shadow:0 30px 80px rgba(0,40,100,.35),0 0 0 1px #75AADB44;animation:hbUp .42s cubic-bezier(.22,1,.36,1)}',
     '@keyframes hbUp{from{transform:translateY(28px);opacity:0}to{transform:translateY(0);opacity:1}}',
-    '.hb-header{background:linear-gradient(135deg,#6b3fa0,#a05080,#c47aa0);padding:22px 24px 20px;text-align:center;border-radius:20px 20px 0 0;position:relative;overflow:hidden}',
-    '.hb-header::before{content:"✦ ✦ ✦ ✦ ✦ ✦ ✦ ✦ ✦ ✦";position:absolute;top:6px;left:0;right:0;font-size:8px;letter-spacing:14px;color:#ffffff22;text-align:center}',
-    '.hb-header::after{content:"✦ ✦ ✦ ✦ ✦ ✦ ✦ ✦ ✦ ✦";position:absolute;bottom:6px;left:0;right:0;font-size:8px;letter-spacing:14px;color:#ffffff22;text-align:center}',
-    '.hb-logo{font-family:"Cormorant Garamond",serif;font-size:24px;font-weight:300;letter-spacing:7px;text-transform:uppercase;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.2)}',
-    '.hb-tagline{font-size:10px;font-weight:200;letter-spacing:2.5px;text-transform:uppercase;color:#f0d8ff99;margin-top:3px}',
-    '.hb-body{padding:22px 26px 28px}',
-    '.hb-divider{display:flex;align-items:center;gap:10px;margin:0 0 16px}',
-    '.hb-divider::before,.hb-divider::after{content:"";flex:1;height:1px;background:linear-gradient(to right,transparent,#c8a0d8,transparent)}',
-    '.hb-divider span{font-size:13px;color:#b078c8}',
-    '.hb-title{font-family:"Cormorant Garamond",serif;font-size:30px;font-weight:400;font-style:italic;color:#3d1f5a;text-align:center;line-height:1.2;margin-bottom:7px}',
-    '.hb-sub{font-size:11px;font-weight:300;letter-spacing:1px;line-height:1.7;color:#9070a8;text-align:center;margin-bottom:20px}',
-    '.hb-wheel-wrap{position:relative;width:248px;height:248px;margin:0 auto 20px}',
-    '#hb-canvas{display:block;border-radius:50%;box-shadow:0 0 0 4px #fdf8ff,0 0 0 6px #c8a0d8,0 12px 40px rgba(100,50,140,.25)}',
-    '.hb-pointer{position:absolute;top:-12px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-top:22px solid #6b3fa0;filter:drop-shadow(0 3px 6px rgba(80,30,110,.4));z-index:2}',
-    '.hb-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:36px;height:36px;border-radius:50%;background:#fdf8ff;border:3px solid #c8a0d8;z-index:3;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 10px rgba(100,50,140,.2)}',
-    '#hb-spin-btn{display:block;width:100%;background:linear-gradient(135deg,#7b3faf,#b05888);color:#fff;border:none;padding:15px 0;font-family:"Cormorant Garamond",serif;font-size:18px;font-style:italic;letter-spacing:2px;cursor:pointer;border-radius:50px;margin-bottom:14px;transition:transform .15s,box-shadow .15s;box-shadow:0 4px 20px rgba(100,50,140,.3)}',
-    '#hb-spin-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 28px rgba(100,50,140,.4)}',
-    '#hb-spin-btn:disabled{opacity:.45;cursor:default;transform:none;box-shadow:none}',
-    '.hb-legal{font-size:10px;font-weight:300;letter-spacing:.8px;color:#b090c0;text-align:center;line-height:1.7}',
-    '#hb-close{position:absolute;top:14px;right:16px;background:#ffffff22;border:none;color:#fff;font-size:16px;cursor:pointer;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;z-index:10;transition:background .2s}',
+    '.hb-header{background:repeating-linear-gradient(-55deg,#5A97CC 0px,#5A97CC 14px,#75AADB 14px,#75AADB 28px);padding:14px 24px 12px;text-align:center;border-radius:20px 20px 0 0;position:relative;overflow:hidden}',
+    '.hb-stars{font-size:13px;letter-spacing:8px;color:#FFD700;text-shadow:0 1px 4px rgba(0,0,0,.4);margin-bottom:4px}',
+    '.hb-logo{font-family:"Montserrat",sans-serif;font-size:17px;font-weight:800;letter-spacing:5px;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,.3)}',
+    '.hb-body{padding:14px 22px 16px}',
+    '.hb-title{font-family:"Cormorant Garamond",serif;font-size:24px;font-weight:400;font-style:italic;color:#1A3A5C;text-align:center;line-height:1.2;margin-bottom:12px}',
+    '.hb-wheel-wrap{position:relative;width:220px;height:220px;margin:0 auto 12px}',
+    '#hb-canvas{display:block;border-radius:50%;box-shadow:0 0 0 3px #f0f8ff,0 0 0 5px #75AADB,0 8px 30px rgba(0,60,120,.22)}',
+    '.hb-pointer{position:absolute;top:-10px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-top:20px solid #1A3A5C;filter:drop-shadow(0 3px 6px rgba(0,40,100,.4));z-index:2}',
+    '.hb-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:30px;height:30px;border-radius:50%;background:#f0f8ff;border:3px solid #75AADB;z-index:3;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 10px rgba(0,60,120,.15)}',
+    '.hb-email-wrap{margin-bottom:8px}',
+    '#hb-email{width:100%;box-sizing:border-box;border:1.5px solid #B8D8F0;border-radius:50px;padding:11px 18px;font-family:"Montserrat",sans-serif;font-size:12px;color:#1A3A5C;background:#fff;outline:none;transition:border-color .2s,box-shadow .2s;text-align:center}',
+    '#hb-email::placeholder{color:#90B0D0}',
+    '#hb-email:focus{border-color:#75AADB;box-shadow:0 0 0 3px rgba(117,170,219,.15)}',
+    '#hb-email.hb-valid{border-color:#2A5A9C}',
+    '#hb-spin-btn{display:block;width:100%;background:linear-gradient(135deg,#1A3A5C,#2A5A9C);color:#fff;border:none;padding:13px 0;font-family:"Montserrat",sans-serif;font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;cursor:pointer;border-radius:50px;margin-bottom:8px;transition:transform .15s,box-shadow .15s;box-shadow:0 4px 20px rgba(0,60,120,.3)}',
+    '#hb-spin-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 28px rgba(0,60,120,.42)}',
+    '#hb-spin-btn:disabled{opacity:.35;cursor:default;transform:none;box-shadow:none}',
+    '.hb-legal{font-size:9px;font-weight:300;letter-spacing:.6px;color:#6080A0;text-align:center;line-height:1.6;margin-bottom:0}',
+    '#hb-no-gracias{display:block;width:100%;background:none;border:none;padding:7px 0 0;font-size:9px;letter-spacing:.8px;color:#9AB0C8;text-align:center;cursor:pointer;text-decoration:underline;text-underline-offset:2px;font-family:"Montserrat",sans-serif}',
+    '#hb-no-gracias:hover{color:#5A7A9A}',
+    '#hb-close{position:absolute;top:12px;right:14px;background:#ffffff22;border:none;color:#fff;font-size:15px;cursor:pointer;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;z-index:10;transition:background .2s}',
     '#hb-close:hover{background:#ffffff44}',
     '#hb-result{display:none;text-align:center;animation:hbPop .45s cubic-bezier(.34,1.56,.64,1)}',
     '@keyframes hbPop{from{transform:scale(.75);opacity:0}to{transform:scale(1);opacity:1}}',
-    '.res-emoji{font-size:40px;margin-bottom:10px}',
-    '.res-title{font-family:"Cormorant Garamond",serif;font-size:28px;font-style:italic;color:#3d1f5a;margin-bottom:6px}',
-    '.res-prize{font-family:"Cormorant Garamond",serif;font-size:40px;font-weight:600;background:linear-gradient(135deg,#7b3faf,#c05888);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:8px}',
-    '.res-desc{font-size:11px;font-weight:300;letter-spacing:1px;color:#9070a8;margin-bottom:20px;line-height:1.8}',
-    '.hb-coupon{border:1.5px dashed #c8a0d8;border-radius:14px;padding:15px 20px;margin-bottom:16px;background:linear-gradient(135deg,#fdf4ff,#faf0ff);cursor:pointer;transition:border-color .2s,box-shadow .2s}',
-    '.hb-coupon:hover{border-color:#9060c0;box-shadow:0 4px 16px rgba(100,50,140,.12)}',
-    '.hb-coupon-label{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:#b088c8;margin-bottom:6px}',
-    '.hb-coupon-code{font-family:"Cormorant Garamond",serif;font-size:28px;font-weight:600;letter-spacing:5px;color:#3d1f5a}',
-    '.hb-coupon-hint{font-size:9px;letter-spacing:1.5px;color:#b090c0;margin-top:5px;text-transform:uppercase}',
-    '#hb-copy-btn{display:block;width:100%;background:transparent;border:1.5px solid #9060c0;color:#7040a0;padding:13px 0;font-family:"Cormorant Garamond",serif;font-size:16px;font-style:italic;letter-spacing:2px;cursor:pointer;border-radius:50px;margin-bottom:14px;transition:all .2s}',
-    '#hb-copy-btn:hover{background:linear-gradient(135deg,#7b3faf,#b05888);border-color:transparent;color:#fff}',
-    '.hb-consolation{background:linear-gradient(135deg,#f8f0ff,#fff0f6);border-left:3px solid #c8a0d8;border-radius:0 12px 12px 0;padding:14px 16px;margin-bottom:16px;text-align:left}',
-    '.hb-consolation p{font-size:12px;font-weight:300;color:#7050a0;line-height:1.8}',
-    '.hb-consolation strong{color:#9040c0;font-weight:500}',
+    '.res-emoji{font-size:34px;margin-bottom:6px}',
+    '.res-title{font-family:"Cormorant Garamond",serif;font-size:24px;font-style:italic;color:#1A3A5C;margin-bottom:4px}',
+    '.res-prize{font-family:"Montserrat",sans-serif;font-size:28px;font-weight:800;letter-spacing:2px;background:linear-gradient(135deg,#1A3A5C,#75AADB);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:6px;line-height:1.2}',
+    '.res-desc{font-size:10px;font-weight:300;letter-spacing:.8px;color:#4A6E8A;margin-bottom:14px;line-height:1.7}',
+    '.hb-coupon{border:1.5px dashed #75AADB;border-radius:14px;padding:12px 18px;margin-bottom:12px;background:linear-gradient(135deg,#e8f4ff,#f0f8ff);cursor:pointer;transition:border-color .2s,box-shadow .2s}',
+    '.hb-coupon:hover{border-color:#1A3A5C;box-shadow:0 4px 16px rgba(0,60,120,.12)}',
+    '.hb-coupon-label{font-size:8px;letter-spacing:3px;text-transform:uppercase;color:#4A80B0;margin-bottom:5px;font-family:"Montserrat",sans-serif}',
+    '.hb-coupon-code{font-family:"Montserrat",sans-serif;font-size:22px;font-weight:800;letter-spacing:4px;color:#1A3A5C}',
+    '.hb-coupon-hint{font-size:8px;letter-spacing:1.5px;color:#6080A0;margin-top:4px;text-transform:uppercase;font-family:"Montserrat",sans-serif}',
+    '#hb-copy-btn{display:block;width:100%;background:transparent;border:1.5px solid #75AADB;color:#1A3A5C;padding:11px 0;font-family:"Montserrat",sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;cursor:pointer;border-radius:50px;margin-bottom:10px;transition:all .2s}',
+    '#hb-copy-btn:hover{background:linear-gradient(135deg,#1A3A5C,#2A5A9C);border-color:transparent;color:#fff}',
+    '.hb-divider{display:flex;align-items:center;gap:10px;margin:0 0 10px}',
+    '.hb-divider::before,.hb-divider::after{content:"";flex:1;height:1px;background:linear-gradient(to right,transparent,#75AADB,transparent)}',
+    '.hb-divider span{font-size:12px;color:#75AADB}',
     '#hb-spin-section{transition:opacity .25s}',
   ].join('\n');
   document.head.appendChild(style);
@@ -66,21 +68,23 @@
     '<div id="hb-modal">' +
       '<div class="hb-header">' +
         '<button id="hb-close">✕</button>' +
+        '<div class="hb-stars">⭐ ⭐ ⭐</div>' +
         '<div class="hb-logo">Hechizo Bijou</div>' +
-        '<div class="hb-tagline">Protegé tu energía ✨</div>' +
       '</div>' +
       '<div class="hb-body">' +
         '<div id="hb-spin-section">' +
-          '<div class="hb-divider"><span>✦</span></div>' +
-          '<h2 class="hb-title">Girá y descubrí<br>tu regalo</h2>' +
-          '<p class="hb-sub">Un gesto mágico para tu primera visita.<br>Girá la ruleta y lleváte un descuento exclusivo.</p>' +
+          '<h2 class="hb-title">Girá y descubrí tu regalo</h2>' +
           '<div class="hb-wheel-wrap">' +
             '<div class="hb-pointer"></div>' +
-            '<canvas id="hb-canvas" width="248" height="248"></canvas>' +
-            '<div class="hb-center">✦</div>' +
+            '<canvas id="hb-canvas" width="220" height="220"></canvas>' +
+            '<div class="hb-center">⭐</div>' +
           '</div>' +
-          '<button id="hb-spin-btn">✨ ¡Girar la ruleta!</button>' +
-          '<p class="hb-legal">Un solo uso · Válido en tu próxima compra · No acumulable</p>' +
+          '<div class="hb-email-wrap">' +
+            '<input id="hb-email" type="email" placeholder="Tu email para recibir el cupón" autocomplete="email">' +
+          '</div>' +
+          '<button id="hb-spin-btn" disabled>⚽ ¡Girar la ruleta!</button>' +
+          '<p class="hb-legal">Un solo uso · Válido en tu próxima compra · No acumulable<br>* Aplica en compras mayores a $50.000</p>' +
+          '<button id="hb-no-gracias">No quiero participar</button>' +
         '</div>' +
         '<div id="hb-result"></div>' +
       '</div>' +
@@ -89,27 +93,26 @@
   document.body.appendChild(wrap);
 
   // ── Segmentos ─────────────────────────────────────────────────────────────────
+  // fake:true → figura en la ruleta pero nunca puede salir como ganador
   var HB_SEG = [
-    { label: '10% OFF',          bg: '#7b3fa0', fg: '#f8e8ff', codigo: 'HECHIZO10',  tipo: 'descuento' },
-    { label: '¡Casi!\nSeguí', bg: '#e8d8f4', fg: '#8060a8', codigo: null,          tipo: 'nada'      },
-    { label: '15% OFF',          bg: '#a04070', fg: '#ffe8f4', codigo: 'HECHIZO15',  tipo: 'descuento' },
-    { label: 'Envío\ngratis', bg: '#5a3888', fg: '#e8d8ff', codigo: 'HECHIZOENV', tipo: 'envio'     },
-    { label: '10% OFF',          bg: '#7b3fa0', fg: '#f8e8ff', codigo: 'HECHIZO10',  tipo: 'descuento' },
-    { label: '20% OFF',          bg: '#3d1f5a', fg: '#f0d8ff', codigo: 'HECHIZO20',  tipo: 'descuento' },
-    { label: '¡Casi!\nSeguí', bg: '#e8d8f4', fg: '#8060a8', codigo: null,          tipo: 'nada'      },
-    { label: '5% OFF',           bg: '#c070a0', fg: '#fff0f8', codigo: 'HECHIZO05',  tipo: 'descuento' },
+    { label: 'Pulsera de\nArgentina', bg: '#C9A227', fg: '#ffffff', codigo: 'HECHIZOPULSERA', tipo: 'pulsera'   },
+    { label: '10% OFF',               bg: '#75AADB', fg: '#ffffff', codigo: 'HECHIZO10',      tipo: 'descuento' },
+    { label: '5% OFF',                bg: '#D6EAFA', fg: '#1A3A5C', codigo: null,             tipo: 'fake',      fake: true },
+    { label: 'Envío\nGratis',         bg: '#5A97CC', fg: '#ffffff', codigo: 'HECHIZOENV',     tipo: 'envio'     },
+    { label: '$4.000',                bg: '#1A3A5C', fg: '#ffffff', codigo: 'HECHIZO4000',    tipo: 'monto'     },
+    { label: '15% OFF',               bg: '#2A5A9C', fg: '#ffffff', codigo: 'HECHIZO15',      tipo: 'descuento' },
   ];
 
   var N   = HB_SEG.length;
   var ARC = (2 * Math.PI) / N;
-  var hbAng = 0, hbSpinning = false;
+  var hbAng = 0, hbSpinning = false, hbEmail = '';
 
   // ── Canvas ────────────────────────────────────────────────────────────────────
   function hbDraw(ang) {
     var cv  = document.getElementById('hb-canvas');
     var ctx = cv.getContext('2d');
-    var cx = 124, cy = 124, r = 120;
-    ctx.clearRect(0, 0, 248, 248);
+    var cx = 110, cy = 110, r = 106;
+    ctx.clearRect(0, 0, 220, 220);
 
     HB_SEG.forEach(function (s, i) {
       var a0 = ang + i * ARC - Math.PI / 2;
@@ -117,17 +120,17 @@
       ctx.beginPath(); ctx.moveTo(cx, cy);
       ctx.arc(cx, cy, r, a0, a1); ctx.closePath();
       ctx.fillStyle = s.bg; ctx.fill();
-      ctx.strokeStyle = '#fdf8ff33'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = '#f0f8ff55'; ctx.lineWidth = 1.5; ctx.stroke();
 
       ctx.save(); ctx.translate(cx, cy); ctx.rotate(a0 + ARC / 2);
       ctx.textAlign = 'right'; ctx.fillStyle = s.fg;
-      ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 3;
+      ctx.shadowColor = 'rgba(0,0,0,.3)'; ctx.shadowBlur = 3;
       var lines = s.label.split('\n');
       if (lines.length === 1) {
-        ctx.font = "600 13px 'Cormorant Garamond', Georgia, serif";
+        ctx.font = "700 13px 'Montserrat', sans-serif";
         ctx.fillText(s.label, r - 10, 5);
       } else {
-        ctx.font = "300 11px 'Jost', sans-serif";
+        ctx.font = "700 11px 'Montserrat', sans-serif";
         ctx.fillText(lines[0], r - 10, -3);
         ctx.fillText(lines[1], r - 10, 10);
       }
@@ -135,27 +138,35 @@
     });
 
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-    ctx.strokeStyle = '#c8a0d8'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.strokeStyle = '#75AADB'; ctx.lineWidth = 3; ctx.stroke();
 
     HB_SEG.forEach(function (_, i) {
       var ta = ang + i * ARC - Math.PI / 2;
       ctx.beginPath();
-      ctx.moveTo(cx + (r - 8) * Math.cos(ta), cy + (r - 8) * Math.sin(ta));
+      ctx.moveTo(cx + (r - 6) * Math.cos(ta), cy + (r - 6) * Math.sin(ta));
       ctx.lineTo(cx + (r + 1) * Math.cos(ta), cy + (r + 1) * Math.sin(ta));
-      ctx.strokeStyle = '#e0b8f0'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = '#B8D8F0'; ctx.lineWidth = 1.5; ctx.stroke();
     });
   }
 
   // ── Spin ──────────────────────────────────────────────────────────────────────
+  function hbPickWinner() {
+    var idx;
+    do { idx = Math.floor(Math.random() * N); } while (HB_SEG[idx].fake);
+    return idx;
+  }
+
   function hbGirar() {
     if (hbSpinning) return;
     hbSpinning = true;
     document.getElementById('hb-spin-btn').disabled = true;
+    document.getElementById('hb-email').disabled = true;
 
-    var winner    = Math.floor(Math.random() * N);
-    var extra     = 5 + Math.random() * 3;
-    var angWinner = (2 * Math.PI / N) * winner;
-    var angFinal  = hbAng + extra * 2 * Math.PI - angWinner;
+    var winner   = hbPickWinner();
+    // extra DEBE ser entero: extra no-entero hace que el segmento ganador quede ~180° girado
+    var extra    = 5 + Math.floor(Math.random() * 4); // 5, 6, 7 u 8 vueltas completas
+    var offset   = (Math.random() - 0.5) * ARC * 0.4; // variación dentro del segmento
+    var angFinal = hbAng + extra * 2 * Math.PI - (winner + 0.5) * ARC + offset;
     var dur = 4400, t0 = performance.now(), ang0 = hbAng;
 
     (function frame(t) {
@@ -166,48 +177,68 @@
       if (p < 1) {
         requestAnimationFrame(frame);
       } else {
-        hbAng = angFinal % (2 * Math.PI);
+        hbAng = angFinal;
         hbSpinning = false;
-        hbShowResult(HB_SEG[winner]);
+        var seg = HB_SEG[winner];
+        hbEnviarEmail(hbEmail, seg.codigo);
+        hbShowResult(seg);
         hbSetCookie(COOKIE, '1', 365);
       }
     })(t0);
   }
 
+  // ── Captura de email ──────────────────────────────────────────────────────────
+  function hbEnviarEmail(email, premio) {
+    try {
+      var storeId = (window.LS && window.LS.store && window.LS.store.id) || null;
+      fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, premio: premio, store_id: storeId }),
+      });
+    } catch (_) {}
+  }
+
   // ── Result ────────────────────────────────────────────────────────────────────
+  var LEGAL_RES = '<p class="hb-legal" style="margin-top:6px">Válido 7 días · Un solo uso · No acumulable · *Compra mínima $50.000</p>';
+
   function hbShowResult(seg) {
     var res  = document.getElementById('hb-result');
     var spin = document.getElementById('hb-spin-section');
-    var html = '';
+    var html = '<div class="hb-divider" style="margin-top:4px"><span>⭐</span></div>';
 
-    if (seg.tipo === 'nada') {
-      html =
-        '<div class="hb-divider" style="margin-top:8px"><span>✦</span></div>' +
-        '<div class="res-emoji">🌙</div>' +
-        '<h2 class="res-title">¡Casi!</h2>' +
-        '<div class="hb-consolation">' +
-          '<p>Esta vez la suerte no acompañó, pero hay magia esperándote en la colección.<br><br>' +
-          '<strong>Suscribíte al newsletter</strong> y recibí descuentos exclusivos antes que nadie 💌</p>' +
-        '</div>' +
-        '<p class="hb-legal">Gracias por participar ✦ hechizo.com.ar</p>';
+    if (seg.tipo === 'pulsera') {
+      html +=
+        '<div class="res-emoji">🏆</div>' +
+        '<h2 class="res-title">¡Ganaste!</h2>' +
+        '<div class="res-prize">PULSERA DE<br>ARGENTINA</div>' +
+        '<p class="res-desc">Aplicá este cupón al finalizar tu compra<br>y recibís la pulsera junto con tu pedido.</p>' +
+        hbCuponHTML(seg.codigo) +
+        LEGAL_RES;
     } else if (seg.tipo === 'envio') {
-      html =
-        '<div class="hb-divider" style="margin-top:8px"><span>✦</span></div>' +
-        '<div class="res-emoji">✨</div>' +
+      html +=
+        '<div class="res-emoji">🏆</div>' +
         '<h2 class="res-title">¡Ganaste!</h2>' +
         '<div class="res-prize">ENVÍO GRATIS</div>' +
-        '<p class="res-desc">En tu próxima compra, el envío corre<br>completamente por nuestra cuenta.</p>' +
+        '<p class="res-desc">Aplicá este cupón al finalizar tu compra<br>y el envío corre por nuestra cuenta.</p>' +
         hbCuponHTML(seg.codigo) +
-        '<p class="hb-legal">Válido 7 días · Un solo uso · No acumulable</p>';
+        LEGAL_RES;
+    } else if (seg.tipo === 'monto') {
+      html +=
+        '<div class="res-emoji">🏆</div>' +
+        '<h2 class="res-title">¡Tu regalo está listo!</h2>' +
+        '<div class="res-prize">$4.000 OFF</div>' +
+        '<p class="res-desc">Aplicá este cupón al finalizar tu compra<br>y el descuento se aplica automáticamente.</p>' +
+        hbCuponHTML(seg.codigo) +
+        LEGAL_RES;
     } else {
-      html =
-        '<div class="hb-divider" style="margin-top:8px"><span>✦</span></div>' +
-        '<div class="res-emoji">🎉</div>' +
+      html +=
+        '<div class="res-emoji">🏆</div>' +
         '<h2 class="res-title">¡Tu regalo está listo!</h2>' +
         '<div class="res-prize">' + seg.label + '</div>' +
-        '<p class="res-desc">Usá este cupón al finalizar tu compra<br>y el descuento se aplica automáticamente.</p>' +
+        '<p class="res-desc">Aplicá este cupón al finalizar tu compra<br>y el descuento se aplica automáticamente.</p>' +
         hbCuponHTML(seg.codigo) +
-        '<p class="hb-legal">Válido 7 días · Un solo uso · No acumulable</p>';
+        LEGAL_RES;
     }
 
     res.innerHTML = html;
@@ -228,10 +259,21 @@
 
   // ── Utils ─────────────────────────────────────────────────────────────────────
   function hbCopiar(c) {
-    navigator.clipboard.writeText(c).then(function () {
-      var b = document.getElementById('hb-copy-btn');
-      if (b) { b.textContent = '✓ ¡Copiado!'; setTimeout(function () { b.textContent = 'Copiar cupón'; }, 2000); }
-    });
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(c).then(hbCopyFeedback);
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = c; ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      try { document.execCommand('copy'); } catch (_) {}
+      document.body.removeChild(ta);
+      hbCopyFeedback();
+    }
+  }
+
+  function hbCopyFeedback() {
+    var b = document.getElementById('hb-copy-btn');
+    if (b) { b.textContent = '✓ ¡Copiado!'; setTimeout(function () { b.textContent = 'Copiar cupón'; }, 2000); }
   }
 
   function hbSetCookie(n, v, d) {
@@ -242,16 +284,30 @@
   // ── Event listeners ───────────────────────────────────────────────────────────
   document.getElementById('hb-close').addEventListener('click', function () {
     document.getElementById('hb-overlay').style.display = 'none';
+    // sin cookie → vuelve a aparecer la próxima visita
   });
+
+  document.getElementById('hb-no-gracias').addEventListener('click', function () {
+    document.getElementById('hb-overlay').style.display = 'none';
+    hbSetCookie(COOKIE, '1', 365);
+    // con cookie → no vuelve a aparecer
+  });
+
+  document.getElementById('hb-email').addEventListener('input', function () {
+    hbEmail = this.value.trim();
+    var valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(hbEmail);
+    this.classList.toggle('hb-valid', valid);
+    document.getElementById('hb-spin-btn').disabled = !valid;
+  });
+
   document.getElementById('hb-spin-btn').addEventListener('click', hbGirar);
 
-  // Expose for inline onclicks in dynamically generated result HTML
   window.hbCopiar = hbCopiar;
 
   // ── Init ──────────────────────────────────────────────────────────────────────
   hbDraw(0);
   setTimeout(function () {
     document.getElementById('hb-overlay').style.display = 'flex';
-  }, 2500);
+  }, 800);
 
 })();

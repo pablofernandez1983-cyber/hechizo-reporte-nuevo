@@ -12,7 +12,7 @@ Flujo:
 
 import os
 import requests as http
-from flask import Blueprint, jsonify, redirect, request
+from flask import Blueprint, jsonify, make_response, redirect, request
 
 TN_CLIENT_ID     = os.environ.get("TN_RULETA_CLIENT_ID", "")
 TN_CLIENT_SECRET = os.environ.get("TN_RULETA_CLIENT_SECRET", "")
@@ -37,6 +37,20 @@ def _get_token(store_id):
     finally:
         conn.close()
     return row[0] if row else None
+
+
+def _save_email(email, store_id, premio):
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO ruleta_emails (email, store_id, premio)
+                VALUES (%s, %s, %s)
+            """, (email.lower().strip(), store_id, premio))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _save_token(store_id, access_token):
@@ -66,7 +80,7 @@ def _tn_headers(token):
 
 def _register_script(store_id, token):
     """Activa el script de la ruleta en el store (idempotente)."""
-    base     = f"https://api.tiendanube.com/v1/{store_id}/scripts"
+    base     = f"https://api.tiendanube.com/2025-03/{store_id}/scripts"
     headers  = _tn_headers(token)
     existing = http.get(base, headers=headers, timeout=10).json()
     matches  = [s for s in (existing if isinstance(existing, list) else [])
@@ -78,7 +92,7 @@ def _register_script(store_id, token):
     resp = http.post(base, headers=headers, json={
         "script_id": SCRIPT_ID,
         "where":     "store",
-        "event":     "onload",
+        "event":     "onfirstinteraction",
     }, timeout=10)
     return {"ok": resp.ok, "msg": "Script activado", "created": True,
             "detail": resp.json() if resp.content else {}}
@@ -86,7 +100,7 @@ def _register_script(store_id, token):
 
 def _remove_script(store_id, token):
     """Desactiva el script de la ruleta en el store."""
-    base     = f"https://api.tiendanube.com/v1/{store_id}/scripts"
+    base     = f"https://api.tiendanube.com/2025-03/{store_id}/scripts"
     headers  = _tn_headers(token)
     existing = http.get(base, headers=headers, timeout=10).json()
     matches  = [s for s in (existing if isinstance(existing, list) else [])
@@ -100,6 +114,38 @@ def _remove_script(store_id, token):
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
+
+@ruleta_bp.route("/ruleta/suscribir", methods=["POST", "OPTIONS"])
+def suscribir():
+    """Guarda el email capturado por el widget de la ruleta."""
+    r = make_response()
+    r.headers["Access-Control-Allow-Origin"] = "*"
+    r.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    r.headers["Access-Control-Allow-Headers"] = "Content-Type"
+
+    if request.method == "OPTIONS":
+        return r, 204
+
+    data     = request.get_json(silent=True) or {}
+    email    = (data.get("email") or "").strip()
+    store_id = data.get("store_id")
+    premio   = data.get("premio") or "nada"
+
+    if not email or "@" not in email:
+        r.set_data(jsonify({"error": "email inválido"}).get_data())
+        r.content_type = "application/json"
+        return r, 400
+
+    try:
+        _save_email(email, store_id, premio)
+        r.set_data(jsonify({"ok": True}).get_data())
+        r.content_type = "application/json"
+        return r, 200
+    except Exception as e:
+        r.set_data(jsonify({"error": str(e)[:200]}).get_data())
+        r.content_type = "application/json"
+        return r, 500
+
 
 @ruleta_bp.route("/ruleta/install")
 def install():
@@ -161,7 +207,7 @@ def list_scripts(store_id):
     if not token:
         return jsonify({"error": f"No hay token para store_id={store_id}"}), 404
     resp = http.get(
-        f"https://api.tiendanube.com/v1/{store_id}/scripts",
+        f"https://api.tiendanube.com/2025-03/{store_id}/scripts",
         headers=_tn_headers(token),
         timeout=10,
     )
@@ -174,7 +220,7 @@ def test_token(store_id):
     if not token:
         return jsonify({"ok": False, "error": f"No hay token guardado para store_id={store_id}"}), 404
     resp = http.get(
-        f"https://api.tiendanube.com/v1/{store_id}/store",
+        f"https://api.tiendanube.com/2025-03/{store_id}/store",
         headers=_tn_headers(token),
         timeout=10,
     )
