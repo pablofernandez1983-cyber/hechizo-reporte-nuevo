@@ -3,9 +3,28 @@
 
   const COOKIE   = 'hb_ruleta_v1';
   const ENDPOINT = 'https://hechizo-reporte-nuevo-production.up.railway.app/ruleta/participar';
+  const LAUNCH_AT = Date.parse('2026-06-16T03:00:00Z'); // 16/06 00:00 Argentina
+  const PREVIEW_PARAM = 'ruleta_preview';
+  const PREVIEW_CODE = 'P9YS4XOcHL_mFgrjoKuMx7jw';
+  const PREVIEW_SESSION = 'hb_ruleta_preview';
+
+  var host = window.location.hostname.toLowerCase();
+  var isProduction = host === 'hechizo.com.ar' || host === 'www.hechizo.com.ar';
+  var params = new URLSearchParams(window.location.search);
+  var previewRequested = params.get(PREVIEW_PARAM) === PREVIEW_CODE;
+
+  if (previewRequested) {
+    sessionStorage.setItem(PREVIEW_SESSION, '1');
+    params.delete(PREVIEW_PARAM);
+    var cleanUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '') + window.location.hash;
+    window.history.replaceState({}, document.title, cleanUrl);
+  }
+
+  var previewEnabled = sessionStorage.getItem(PREVIEW_SESSION) === '1';
+  if (isProduction && Date.now() < LAUNCH_AT && !previewEnabled) return;
 
   if (document.getElementById('hb-overlay')) return;
-  if (document.cookie.split(';').some(function (c) { return c.trim().startsWith(COOKIE + '='); })) return;
+  if (!previewEnabled && document.cookie.split(';').some(function (c) { return c.trim().startsWith(COOKIE + '='); })) return;
 
   // ── Google Fonts ──────────────────────────────────────────────────────────────
   var fontLink = document.createElement('link');
