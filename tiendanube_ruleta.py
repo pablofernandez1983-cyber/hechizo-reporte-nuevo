@@ -20,7 +20,7 @@ from flask import Blueprint, jsonify, make_response, redirect, request
 TN_CLIENT_ID     = os.environ.get("TN_RULETA_CLIENT_ID", "")
 TN_CLIENT_SECRET = os.environ.get("TN_RULETA_CLIENT_SECRET", "")
 
-SCRIPT_ID = 7435  # ID del script registrado en el portal de Partners
+SCRIPT_ID = 7436  # ID del script registrado en el portal de Partners
 
 USER_AGENT   = "HechizoBijou-Ruleta/1.0 (hechizobijou@gmail.com)"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
