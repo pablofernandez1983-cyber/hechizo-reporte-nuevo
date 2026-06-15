@@ -237,7 +237,11 @@
     return fetch(ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email, store_id: storeId }),
+      body: JSON.stringify({
+        email: email,
+        store_id: storeId,
+        preview_code: previewEnabled ? PREVIEW_CODE : null,
+      }),
     }).then(function (response) {
       return response.json().catch(function () { return {}; }).then(function (data) {
         if (!response.ok) {

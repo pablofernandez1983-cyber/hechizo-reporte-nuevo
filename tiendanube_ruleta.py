@@ -37,6 +37,7 @@ MAIL_PREMIOS = {
 RULETA_PREMIOS = tuple(MAIL_PREMIOS)
 PRODUCTION_STORE_ID = 1384618
 RULETA_LAUNCH_AT = datetime(2026, 6, 16, 3, 0, tzinfo=timezone.utc)
+RULETA_PREVIEW_CODE = "P9YS4XOcHL_mFgrjoKuMx7jw"
 
 ruleta_bp = Blueprint("tiendanube_ruleta", __name__)
 
@@ -346,9 +347,13 @@ def _cors_response(payload=None):
     return r
 
 
-def _production_launch_pending(store_id):
+def _production_launch_pending(store_id, preview_code=None):
     try:
-        return int(store_id) == PRODUCTION_STORE_ID and datetime.now(timezone.utc) < RULETA_LAUNCH_AT
+        return (
+            int(store_id) == PRODUCTION_STORE_ID
+            and datetime.now(timezone.utc) < RULETA_LAUNCH_AT
+            and not secrets.compare_digest(str(preview_code or ""), RULETA_PREVIEW_CODE)
+        )
     except (TypeError, ValueError):
         return False
 
@@ -362,11 +367,12 @@ def participar():
     data     = request.get_json(silent=True) or {}
     email    = (data.get("email") or "").strip()
     store_id = data.get("store_id")
+    preview_code = data.get("preview_code")
 
     if not email or "@" not in email:
         return _cors_response({"error": "email inválido"}), 400
 
-    if _production_launch_pending(store_id):
+    if _production_launch_pending(store_id, preview_code):
         return _cors_response({"error": "La ruleta estará disponible próximamente"}), 503
 
     try:
