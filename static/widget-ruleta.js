@@ -9,14 +9,26 @@
   const PREVIEW_SESSION = 'hb_ruleta_preview';
 
   var host = window.location.hostname.toLowerCase();
-  var isProduction = host === 'hechizo.com.ar' || host === 'www.hechizo.com.ar';
+  var productionHosts = [
+    'hechizo.com.ar',
+    'www.hechizo.com.ar',
+    'hechizobijou.com.ar',
+    'www.hechizobijou.com.ar',
+    'hechizobijou.mitiendanube.com',
+  ];
+  var isProduction = productionHosts.indexOf(host) !== -1;
   var params = new URLSearchParams(window.location.search);
-  var previewRequested = params.get(PREVIEW_PARAM) === PREVIEW_CODE;
+  var hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  var previewRequested = params.get(PREVIEW_PARAM) === PREVIEW_CODE ||
+    hashParams.get(PREVIEW_PARAM) === PREVIEW_CODE;
 
   if (previewRequested) {
     sessionStorage.setItem(PREVIEW_SESSION, '1');
     params.delete(PREVIEW_PARAM);
-    var cleanUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '') + window.location.hash;
+    hashParams.delete(PREVIEW_PARAM);
+    var cleanUrl = window.location.pathname +
+      (params.toString() ? '?' + params.toString() : '') +
+      (hashParams.toString() ? '#' + hashParams.toString() : '');
     window.history.replaceState({}, document.title, cleanUrl);
   }
 
