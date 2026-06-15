@@ -13,6 +13,7 @@ Flujo:
 import os
 import secrets
 import threading
+from datetime import datetime, timezone
 import requests as http
 from flask import Blueprint, jsonify, make_response, redirect, request
 
@@ -34,6 +35,8 @@ MAIL_PREMIOS = {
 }
 
 RULETA_PREMIOS = tuple(MAIL_PREMIOS)
+PRODUCTION_STORE_ID = 1384618
+RULETA_LAUNCH_AT = datetime(2026, 6, 16, 3, 0, tzinfo=timezone.utc)
 
 ruleta_bp = Blueprint("tiendanube_ruleta", __name__)
 
@@ -343,6 +346,13 @@ def _cors_response(payload=None):
     return r
 
 
+def _production_launch_pending(store_id):
+    try:
+        return int(store_id) == PRODUCTION_STORE_ID and datetime.now(timezone.utc) < RULETA_LAUNCH_AT
+    except (TypeError, ValueError):
+        return False
+
+
 @ruleta_bp.route("/ruleta/participar", methods=["POST", "OPTIONS"])
 def participar():
     """Reserva el email y decide el premio antes de permitir el giro."""
@@ -355,6 +365,9 @@ def participar():
 
     if not email or "@" not in email:
         return _cors_response({"error": "email inválido"}), 400
+
+    if _production_launch_pending(store_id):
+        return _cors_response({"error": "La ruleta estará disponible próximamente"}), 503
 
     try:
         premio = secrets.choice(RULETA_PREMIOS)
@@ -386,6 +399,9 @@ def suscribir():
         r.set_data(jsonify({"error": "email inválido"}).get_data())
         r.content_type = "application/json"
         return r, 400
+
+    if _production_launch_pending(store_id):
+        return _cors_response({"error": "La ruleta estará disponible próximamente"}), 503
 
     try:
         if not _reserve_email(email, store_id, premio):
