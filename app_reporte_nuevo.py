@@ -178,6 +178,8 @@ def ver_tokens():
                     "expira": expires_dt.strftime("%d/%m/%Y"),
                     "dias_restantes": dias,
                 })
+            elif expires_ts == 0 and is_valid:
+                tokens.append({"nombre": "Meta Ads", "valido": True, "expira": "permanente", "dias_restantes": None})
             else:
                 tokens.append({"nombre": "Meta Ads", "valido": False, "expira": None, "dias_restantes": 0})
         except Exception as e:
