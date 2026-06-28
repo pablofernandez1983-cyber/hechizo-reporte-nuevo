@@ -195,16 +195,23 @@ def export_pagonube(page) -> str | None:
     except PWTimeout:
         pass
 
-    # Eliminar filtros de fecha activos (ej: "Último mes") para exportar todo
-    chips = frame.locator('[data-testid="dismiss-chip"]')
-    chip_count = chips.count()
-    if chip_count:
-        print(f"[OK] Eliminando {chip_count} filtro(s) de fecha...")
-        for i in range(chip_count):
-            chips.nth(i).click()
-            pace()
+    # Eliminar filtros de fecha activos (ej: "Último mes") para exportar TODO.
+    # El botón de cierre del chip usa data-testid="dismiss-chip-button"
+    # (aria-label="Dismiss chip"). Si no se quita, PagoNube exporta solo el
+    # "Último mes" = mes calendario anterior, y el mes corriente nunca baja.
+    chips = frame.locator(
+        '[data-testid="dismiss-chip-button"], [aria-label="Dismiss chip"]'
+    )
+    # Se quitan de a uno: cada click reordena/recrea los chips restantes.
+    quitados = 0
+    while chips.count() and quitados < 10:
+        chips.first.click()
+        quitados += 1
+        pace()
+    if quitados:
+        print(f"[OK] Eliminados {quitados} filtro(s) de fecha -> exporta todo")
     else:
-        print("[OK] Sin filtros de fecha activos")
+        print("[WARN] No se encontró el chip de fecha; puede exportar solo el último mes")
 
     # Interceptar la descarga
     print("[OK] Disparando export...")

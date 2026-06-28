@@ -168,6 +168,16 @@ def safe_float(v):
     except:
         return 0.0
 
+# Detección de envío por moto / última milla.
+# Tiendanube renombró el servicio a "Envíos Nube - Entrega rápida a domicilio"
+# (operado por Epick en CABA/GBA), por eso ya no alcanza con buscar "mot".
+def es_moto(medio_env):
+    m = (medio_env or "").lower()
+    return any(x in m for x in (
+        "mot", "mensajer", "mile",
+        "entrega rapida", "entrega rápida", "epick", "e-pick",
+    ))
+
 def _col_idx(header_list, *keywords):
     h = [str(x).strip().lower() for x in header_list]
     for kw in keywords:
@@ -261,7 +271,7 @@ def guardar_ventas_db(orders):
         tracking  = str(o.get("shipping_tracking_number","") or "").lower()
         medio_env = str(o.get("shipping_option","") or "").lower()
         if "36000" in tracking:       carrier = "andreani"
-        elif medio_env.startswith("mot"): carrier = "moto"
+        elif es_moto(medio_env):      carrier = "moto"
         elif "1978" in tracking:      carrier = "correo"
         else:                         carrier = "otro"
         coupons = o.get("coupon") or []
@@ -712,9 +722,7 @@ def fetch_tiendanube():
                 acum["envio_andreani"][k]  -= shipping_cust
             elif "1978" in tracking and tracking:
                 acum["envio_correo_tn"][k] -= shipping_cust
-            elif ("mot" in medio_env or
-                  "mensajer" in medio_env or
-                  "mile" in medio_env):
+            elif es_moto(medio_env):
                 acum["envio_moto"][k]      -= shipping_cust
             elif tracking:
                 # solo contar como "otro" si tiene tracking (evita envios nube sin despachar)
