@@ -351,7 +351,7 @@ def guardar_ventas_detalle_db(orders):
     else:
         log(f"  [WARN] ventas_detalle: insert falló (filas preparadas: {len(rows)})")
 
-def guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type):
+def guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type, i_disagg=-1):
     if not DATABASE_URL: return
     log("  DB: guardando MP settlement...")
     rows = []
@@ -373,19 +373,22 @@ def guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_tax
         taxes    = safe_float(cols[i_taxes])   if i_taxes   >= 0 and len(cols) > i_taxes   else 0
         net      = safe_float(cols[i_net])     if i_net     >= 0 and len(cols) > i_net     else 0
         payment  = cols[5].strip().strip('"') if len(cols) > 5 else ""
-        rows.append((source_id, fecha, k[0], k[1], tx_type, tx_amount, fee, fin_fee, mkp_fee, taxes, net, payment))
+        disagg   = cols[i_disagg].strip().strip('"') if i_disagg >= 0 and len(cols) > i_disagg else ""
+        iibb_jurisdiccion = _mp_iibb_jurisdiccion(disagg) if taxes else None
+        rows.append((source_id, fecha, k[0], k[1], tx_type, tx_amount, fee, fin_fee, mkp_fee, taxes, net, payment, iibb_jurisdiccion))
     sql = """
         INSERT INTO mp_settlement
             (source_id, fecha, anio, mes, transaction_type,
              transaction_amount, fee_amount, financing_fee_amount, mkp_fee_amount,
-             taxes_amount, settlement_net_amount, payment_method)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             taxes_amount, settlement_net_amount, payment_method, iibb_jurisdiccion)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (source_id, transaction_type) DO UPDATE SET
             fee_amount=EXCLUDED.fee_amount,
             financing_fee_amount=EXCLUDED.financing_fee_amount,
             mkp_fee_amount=EXCLUDED.mkp_fee_amount,
             taxes_amount=EXCLUDED.taxes_amount,
-            settlement_net_amount=EXCLUDED.settlement_net_amount
+            settlement_net_amount=EXCLUDED.settlement_net_amount,
+            iibb_jurisdiccion=EXCLUDED.iibb_jurisdiccion
     """
     ok = db_exec_many(sql, rows)
     if ok: log(f"  DB: {len(rows)} filas MP guardadas")
@@ -755,7 +758,20 @@ def _mp_indices(idx_map):
         "i_taxes":   idx_map.get("TAXES_AMOUNT", -1),
         "i_net":     idx_map.get("SETTLEMENT_NET_AMOUNT", -1),
         "i_type":    idx_map.get("TRANSACTION_TYPE", -1),
+        "i_disagg":  idx_map.get("TAXES_DISAGGREGATED", -1),
     }
+
+def _mp_iibb_jurisdiccion(disagg_str):
+    if not disagg_str:
+        return None
+    try:
+        arr = json.loads(disagg_str)
+        if isinstance(arr, list) and arr:
+            return arr[0].get("financial_entity")
+    except Exception:
+        m = re.search(r'"financial_entity"\s*:\s*"([^"]+)"', disagg_str)
+        if m: return m.group(1)
+    return None
 
 def _calcular_est_real(resultado, tabla, periodos):
     return {
@@ -1029,9 +1045,9 @@ def fetch_mercadopago():
     header  = [c.strip().strip('"').upper() for c in lines[0].split(sep)]
     idx_map = {col: i for i, col in enumerate(header)}
     ix = _mp_indices(idx_map)
-    i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type = (
+    i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type, i_disagg = (
         ix["i_date"], ix["i_fee"], ix["i_fin_fee"], ix["i_mkp_fee"],
-        ix["i_taxes"], ix["i_net"], ix["i_type"]
+        ix["i_taxes"], ix["i_net"], ix["i_type"], ix["i_disagg"]
     )
 
     com_mp = defaultdict(float); ret_iibb = defaultdict(float)
@@ -1064,7 +1080,7 @@ def fetch_mercadopago():
         "_raw": {"lines": lines, "header": header, "sep": sep,
                  "i_date": i_date, "i_fee": i_fee, "i_fin_fee": i_fin_fee,
                  "i_mkp_fee": i_mkp_fee, "i_taxes": i_taxes,
-                 "i_net": i_net, "i_type": i_type},
+                 "i_net": i_net, "i_type": i_type, "i_disagg": i_disagg},
     }
 
 # ═══════════════════════════════════════════════════════════════
@@ -1559,15 +1575,15 @@ def main():
         header = [c.strip().strip('"').upper() for c in lines[0].split(sep)]
         idx_map = {col: i for i, col in enumerate(header)}
         ix = _mp_indices(idx_map)
-        i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type = (
+        i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type, i_disagg = (
             ix["i_date"], ix["i_fee"], ix["i_fin_fee"], ix["i_mkp_fee"],
-            ix["i_taxes"], ix["i_net"], ix["i_type"]
+            ix["i_taxes"], ix["i_net"], ix["i_type"], ix["i_disagg"]
         )
         log(f"  {len(lines)} líneas, sep='{sep}'")
         # Truncar y reescribir limpio
         db_exec("TRUNCATE TABLE mp_settlement")
         log("  mp_settlement truncada")
-        guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type)
+        guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type, i_disagg)
         log("Modo MP_REWRITE_DB completado.")
         return
 
@@ -1593,7 +1609,7 @@ def main():
                 guardar_mp_db(raw["lines"], raw["header"], raw["sep"],
                               raw["i_date"], raw["i_fee"], raw["i_fin_fee"],
                               raw["i_mkp_fee"], raw["i_taxes"],
-                              raw["i_net"], raw["i_type"])
+                              raw["i_net"], raw["i_type"], raw.get("i_disagg", -1))
             pagonube_datos = s3_leer("pagonube.json") or []
             guardar_pagonube_db(pagonube_datos)
             meta_cache = s3_leer("meta_gastos.json") or []
