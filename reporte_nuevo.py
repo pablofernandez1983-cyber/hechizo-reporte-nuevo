@@ -351,6 +351,45 @@ def guardar_ventas_detalle_db(orders):
     else:
         log(f"  [WARN] ventas_detalle: insert falló (filas preparadas: {len(rows)})")
 
+def sync_ventas_recientes(dias=3):
+    """Sincronización liviana: trae de Tiendanube solo las órdenes creadas/modificadas
+    en los últimos `dias` días (altas y cambios de estado de pago) y las upsertea en
+    Supabase. No toca el caché S3 ni corre el resto del pipeline (MP/Meta/Google Ads).
+
+    Existe para que endpoints de lectura rápida (como /historico) puedan mantener
+    'ventas' al día sin depender de que alguien dispare el reporte completo — así el
+    total de "ayer" no queda pisado por la última corrida completa.
+    """
+    if not TN_STORE_ID or not TN_TOKEN or not DATABASE_URL:
+        return 0
+    headers = {
+        "Authentication": f"bearer {TN_TOKEN}",
+        "User-Agent": "HechizoBijou-Reporte/1.0 (hechizobijou@gmail.com)"
+    }
+    base  = f"https://api.tiendanube.com/v1/{TN_STORE_ID}"
+    desde = (ahora_ar() - timedelta(days=dias)).strftime("%Y-%m-%dT00:00:00-03:00")
+    orders, page = [], 1
+    while True:
+        try:
+            r = requests.get(f"{base}/orders", headers=headers,
+                              params={"page": page, "per_page": 200, "updated_at_min": desde},
+                              timeout=20)
+            r.raise_for_status()
+            batch = r.json()
+        except Exception as e:
+            log(f"  [WARN] sync_ventas_recientes pág {page}: {e}")
+            break
+        if not batch: break
+        orders.extend(batch)
+        if len(batch) < 200: break
+        page += 1
+    if orders:
+        guardar_ventas_db(orders)
+        guardar_ventas_detalle_db(orders)
+        log(f"  sync_ventas_recientes: {len(orders)} órdenes sincronizadas")
+    close_db()
+    return len(orders)
+
 def guardar_mp_db(lines, header, sep, i_date, i_fee, i_fin_fee, i_mkp_fee, i_taxes, i_net, i_type, i_disagg=-1):
     if not DATABASE_URL: return
     log("  DB: guardando MP settlement...")
