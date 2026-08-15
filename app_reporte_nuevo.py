@@ -311,6 +311,56 @@ def historico_mensual():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/historico-rango")
+def historico_rango():
+    """Ventas agrupadas por día/semana/mes en un rango de fechas arbitrario.
+    Para el gráfico de evolución y las comparaciones de la solapa Estadísticas.
+    Query params: desde, hasta (YYYY-MM-DD), granularidad (dia|semana|mes)."""
+    if not DATABASE_URL:
+        return jsonify({"ok": False, "error": "DATABASE_URL no configurada"}), 500
+
+    desde = request.args.get("desde", "")
+    hasta = request.args.get("hasta", "")
+    granularidad = request.args.get("granularidad", "dia")
+    if granularidad not in ("dia", "semana", "mes"):
+        granularidad = "dia"
+    try:
+        datetime.strptime(desde, "%Y-%m-%d")
+        datetime.strptime(hasta, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"ok": False, "error": "desde/hasta deben ser YYYY-MM-DD"}), 400
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+              CASE
+                WHEN %(gran)s = 'mes'    THEN TO_CHAR(fecha, 'YYYY-MM')
+                WHEN %(gran)s = 'semana' THEN TO_CHAR(DATE_TRUNC('week', fecha), 'YYYY-MM-DD')
+                ELSE TO_CHAR(fecha, 'YYYY-MM-DD')
+              END AS periodo,
+              ROUND(SUM(total)::numeric, 0) AS total,
+              COUNT(orden_id)               AS cantidad
+            FROM ventas
+            WHERE fecha >= %(desde)s::date AND fecha <= %(hasta)s::date
+              AND estado_pago IN ('paid', 'authorized')
+            GROUP BY periodo
+            ORDER BY periodo
+        """, {"gran": granularidad, "desde": desde, "hasta": hasta})
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        puntos = [
+            {"periodo": r[0], "total": int(r[1]), "cantidad": int(r[2])}
+            for r in rows
+        ]
+        return jsonify({"ok": True, "puntos": puntos})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/stock-debug")
 def stock_debug():
     """Diagnóstico: chequea estado de ventas_detalle y ventas."""
