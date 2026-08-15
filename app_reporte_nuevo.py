@@ -8,7 +8,7 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
-from reporte_nuevo import main as ejecutar_reporte
+from reporte_nuevo import main as ejecutar_reporte, sync_ventas_recientes
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 TN_STORE_ID  = os.environ.get("TIENDANUBE_STORE_ID", "")
@@ -69,6 +69,9 @@ _estado = {
 }
 
 _log_buffer = deque(maxlen=200)  # últimas 200 líneas
+
+_ultimo_sync_ventas_rapido = 0
+SYNC_VENTAS_THROTTLE_SEG   = 300  # no repetir el sync liviano de TN más de 1 vez cada 5 min
 
 
 class _LogCapture(io.TextIOBase):
@@ -238,6 +241,20 @@ def historico():
     """Devuelve ventas agrupadas por día para los últimos 45 días desde Supabase."""
     if not DATABASE_URL:
         return jsonify({"ok": False, "error": "DATABASE_URL no configurada"}), 500
+
+    # Sync liviano de TN → Supabase antes de leer, para que "ayer" no quede pisado
+    # por la última corrida completa del reporte (que puede ser de horas antes).
+    # Se salta si ya hay un reporte completo corriendo (comparten la misma conexión
+    # a DB) y se throttlea para no golpear la API de TN en cada request.
+    global _ultimo_sync_ventas_rapido
+    ahora_ts = time.time()
+    if not _estado["corriendo"] and (ahora_ts - _ultimo_sync_ventas_rapido) >= SYNC_VENTAS_THROTTLE_SEG:
+        _ultimo_sync_ventas_rapido = ahora_ts
+        try:
+            sync_ventas_recientes(dias=3)
+        except Exception as e:
+            print(f"[WARN] sync_ventas_recientes: {e}")
+
     try:
         import psycopg2
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
