@@ -1,0 +1,6 @@
+.env
+tiendanube_state.json
+service_account.json
+__pycache__/
+*.pyc
+.claude/

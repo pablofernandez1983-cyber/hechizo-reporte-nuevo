@@ -1,0 +1,38 @@
+name: Google Ads -> Sheet de pagos
+
+on:
+  schedule:
+    # Dia 3 de cada mes, 12:00 UTC (9:00 ART) - el mes anterior ya cerrado
+    - cron: '0 12 3 * *'
+  workflow_dispatch:
+    inputs:
+      mes:
+        description: 'Mes a cargar (YYYY-MM). Vacio = mes anterior'
+        required: false
+        default: ''
+
+jobs:
+  cargar-gasto-google-ads:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install google-ads google-api-python-client google-auth PyYAML
+
+      - name: Cargar gasto de Google Ads en el Sheet
+        env:
+          GOOGLE_ADS_YAML: ${{ secrets.GOOGLE_ADS_YAML }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEET_ID_GOOGLE_ADS: ${{ secrets.SHEET_ID_GOOGLE_ADS }}
+        run: |
+          python google_ads_sheet.py ${{ github.event.inputs.mes }}
