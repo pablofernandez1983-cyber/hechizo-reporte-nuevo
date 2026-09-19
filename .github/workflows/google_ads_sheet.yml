@@ -1,9 +1,14 @@
 name: Google Ads -> Sheet de pagos
 
+# OJO: el cron mensual esta DESACTIVADO a proposito (19/9/2026).
+# Este workflow carga un ESTIMADO (cost_micros x1,21), no el pago real, y el
+# P&L (reporte_nuevo.fetch_google_ads) suma las filas de tipo "Pagos". Si el
+# estimado se cargara solo y despues se pega el export real de Transacciones,
+# el mes quedaria contado dos veces. Queda solo en modo manual hasta definir
+# de donde sale el importe exacto pagado.
 on:
-  schedule:
-    # Dia 3 de cada mes, 12:00 UTC (9:00 ART) - el mes anterior ya cerrado
-    - cron: '0 12 3 * *'
+  # schedule:
+  #   - cron: '0 12 3 * *'
   workflow_dispatch:
     inputs:
       mes:
