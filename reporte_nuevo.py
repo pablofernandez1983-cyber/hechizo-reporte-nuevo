@@ -259,9 +259,11 @@ def guardar_ventas_db(orders):
     if not DATABASE_URL: return
     log("  DB: guardando ventas...")
     rows = []
+    excluidas = []  # canceladas / sin pagar: no deben quedar en ventas aunque antes estuvieran pagas
     for o in orders:
-        if o.get("status") == "cancelled": continue
-        if o.get("payment_status") not in ("paid", "authorized"): continue
+        if o.get("status") == "cancelled" or o.get("payment_status") not in ("paid", "authorized"):
+            if o.get("id"): excluidas.append(int(o["id"]))
+            continue
         try:
             dt = datetime.fromisoformat(
                 o.get("created_at","").replace("Z","+00:00")
@@ -303,6 +305,11 @@ def guardar_ventas_db(orders):
     """
     ok = db_exec_many(sql, rows)
     if ok: log(f"  DB: {len(rows)} ventas guardadas")
+    if excluidas:
+        # Una orden cobrada y después cancelada/devuelta quedaba en ventas (el upsert
+        # la salteaba), inflando /historico y la web respecto del P&L.
+        db_exec("DELETE FROM ventas_detalle WHERE orden_id = ANY(%s)", (excluidas,))
+        db_exec("DELETE FROM ventas WHERE orden_id = ANY(%s)", (excluidas,))
 
 def guardar_ventas_detalle_db(orders):
     """Inserta el detalle de productos de cada orden en ventas_detalle."""
