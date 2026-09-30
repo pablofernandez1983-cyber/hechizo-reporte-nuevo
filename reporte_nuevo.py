@@ -576,7 +576,16 @@ def guardar_detalle_pnl_db(periodos, tabla):
             updated_at=EXCLUDED.updated_at
     """
     ok = db_exec_many(sql, rows)
-    if ok: log(f"  DB: detalle P&L {len(rows)} filas guardadas")
+    if ok:
+        log(f"  DB: detalle P&L {len(rows)} filas guardadas")
+        # Un rubro que ahora da 0 no se reescribe arriba: borrar su fila vieja
+        # de los períodos recalculados para que detalle_pnl cierre con pnl_mensual.
+        claves = [p[0] * 100 + p[1] for p in periodos]
+        if claves:
+            db_exec("""
+                DELETE FROM detalle_pnl
+                WHERE updated_at < %s AND (anio * 100 + mes) BETWEEN %s AND %s
+            """, (ts, min(claves), max(claves)))
 
 # ═══════════════════════════════════════════════════════════════
 # S3 CACHE
@@ -1195,10 +1204,8 @@ def fetch_meta():
 # FUENTE 4: GOOGLE ADS
 # ═══════════════════════════════════════════════════════════════
 
-def fetch_google_ads():
-    log("Google Ads: leyendo desde Sheet...")
-    gastos = defaultdict(float)
-
+def _leer_gads_filas(verbose=True):
+    """Filas de pagos de Google Ads desde el Sheet: {"k","fecha","tipo","descripcion","credito","mult","valor"}."""
     for hoja in ["Historico","historico","Google Ads","Hoja 1"]:
         rows = leer_hoja(SHEET_ID_GOOGLE_ADS, hoja)
         if not rows or len(rows) < 2: continue
@@ -1206,12 +1213,15 @@ def fetch_google_ads():
         i_f    = _col_idx(h, "fecha","date","dia")
         i_tipo = _col_idx(h, "tipo","type")
         i_c    = _col_idx(h, "crédit","credit","costo","cost","importe")
+        i_d    = _col_idx(h, "descrip")
         if i_f < 0 or i_c < 0:
-            log(f"  Google Ads '{hoja}': columnas no encontradas en {h[:8]}"); continue
+            if verbose: log(f"  Google Ads '{hoja}': columnas no encontradas en {h[:8]}")
+            continue
 
-        log(f"  Google Ads '{hoja}': cols fecha={i_f} tipo={i_tipo} valor={i_c}")
-        filas_ok = 0
+        if verbose: log(f"  Google Ads '{hoja}': cols fecha={i_f} tipo={i_tipo} valor={i_c}")
+        filas = []
         for row in rows[1:]:
+            tipo = ""
             if i_tipo >= 0 and len(row) > i_tipo:
                 tipo = str(row[i_tipo]).strip().lower()
                 if tipo and "pago" not in tipo and "payment" not in tipo:
@@ -1222,11 +1232,22 @@ def fetch_google_ads():
             k = mes_key(fecha)
             if not k: continue
             mult = GADS_MULTIPLICADOR.get(k, GADS_MULTIPLICADOR_DEFAULT)
-            gastos[k] -= abs(val) * mult
-            filas_ok += 1
+            filas.append({
+                "k": k, "fecha": fecha, "tipo": tipo,
+                "descripcion": str(row[i_d]).strip() if i_d >= 0 and len(row) > i_d else "",
+                "credito": abs(val), "mult": mult, "valor": -abs(val) * mult,
+            })
+        return filas, hoja
+    return [], None
 
-        log(f"  Google Ads '{hoja}': {len(gastos)} meses ({filas_ok} filas Pagos)")
-        break
+def fetch_google_ads():
+    log("Google Ads: leyendo desde Sheet...")
+    gastos = defaultdict(float)
+    filas, hoja = _leer_gads_filas()
+    for x in filas:
+        gastos[x["k"]] += x["valor"]
+    if hoja:
+        log(f"  Google Ads '{hoja}': {len(gastos)} meses ({len(filas)} filas Pagos)")
 
     return {"pub_gads": dict(gastos)}
 
@@ -1319,19 +1340,25 @@ def fetch_mp_getnet_historico():
 # FUENTE 7: DATOS MANUALES
 # ═══════════════════════════════════════════════════════════════
 
-def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
+def _leer_solapa_filas(posibles_nombres, col_valor, es_ingreso, label, verbose=True):
+    """Lee una solapa de Sheet GASTOS y devuelve (filas, nombre_solapa).
+    Cada fila: {"k": (anio, mes), "fecha": valor crudo, "detalle": str, "valor": float con signo}.
+    Es la misma lógica que usa el P&L (_leer_solapa agrega estas filas por mes)."""
     for nombre in posibles_nombres:
         rows = leer_hoja(SHEET_ID_GASTOS, nombre, unformatted=True)
         if not rows: continue
         h = [str(x).strip() for x in rows[0]]
-        log(f"    '{nombre}': {len(rows)} filas | header={h[:5]}")
-        if len(rows) > 1: log(f"    fila1={rows[1][:5]}")
+        if verbose:
+            log(f"    '{nombre}': {len(rows)} filas | header={h[:5]}")
+            if len(rows) > 1: log(f"    fila1={rows[1][:5]}")
 
         i_f = _col_idx(h, "fecha", "date")
         i_v = _col_idx(h, "ingreso" if es_ingreso else "egreso",
                        "entrada" if es_ingreso else "salida")
+        i_d = _col_idx(h, "detalle", "descrip", "concepto")
         if i_f < 0: i_f = 0
         if i_v < 0: i_v = col_valor
+        if i_d < 0: i_d = 1
 
         primera = rows[0][i_f] if len(rows[0]) > i_f else ""
         data_rows = rows[1:] if mes_key(primera) is None else rows
@@ -1347,7 +1374,7 @@ def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
         if primer_anio_explicito is None:
             primer_anio_explicito = ANO
 
-        acum = defaultdict(float)
+        filas = []
         ultimo_anio = primer_anio_explicito
 
         for row in data_rows:
@@ -1362,14 +1389,52 @@ def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
             if not k: continue
             v = safe_float(row[i_v]) if len(row) > i_v and row[i_v] else 0.0
             if v:
-                acum[k] += v if es_ingreso else -v
+                filas.append({
+                    "k": k, "fecha": f,
+                    "detalle": str(row[i_d]).strip() if len(row) > i_d else "",
+                    "valor": v if es_ingreso else -v,
+                })
 
-        col_name = h[i_v] if i_v < len(h) else f"col{i_v}"
-        log(f"    -> {label}: {len(acum)} meses ('{nombre}' col '{col_name}')")
-        return dict(acum)
+        if verbose:
+            col_name = h[i_v] if i_v < len(h) else f"col{i_v}"
+            log(f"    -> {label}: {len(set(x['k'] for x in filas))} meses ('{nombre}' col '{col_name}')")
+        return filas, nombre
 
-    log(f"    [WARN] {label}: solapa no encontrada en {posibles_nombres}")
-    return {}
+    if verbose:
+        log(f"    [WARN] {label}: solapa no encontrada en {posibles_nombres}")
+    return [], None
+
+def _leer_solapa(posibles_nombres, col_valor, es_ingreso, label):
+    filas, _ = _leer_solapa_filas(posibles_nombres, col_valor, es_ingreso, label)
+    acum = defaultdict(float)
+    for x in filas:
+        acum[x["k"]] += x["valor"]
+    return dict(acum)
+
+def _leer_tn_abono_filas(verbose=True):
+    """Filas de la solapa Tiendanube_abono: {"k", "fecha", "importe"} (importe positivo)."""
+    tn_rows = leer_hoja(SHEET_ID_GASTOS, "Tiendanube_abono")
+    if verbose: log(f"  TN Abono Sheet: {len(tn_rows)} filas")
+    filas = []
+    if tn_rows:
+        h = [str(x).strip() for x in tn_rows[0]]
+        i_f = _col_idx(h, "fecha", "date") if mes_key(str(tn_rows[0][0]).strip()) is None else -1
+        data_rows = tn_rows[1:] if i_f >= 0 else tn_rows
+        i_f = max(i_f, 0)
+        i_v = 1  # columna B = importe
+        ultimo_anio = ANO
+        for row in data_rows:
+            f = str(row[i_f]).strip() if len(row) > i_f else ""
+            if not f: continue
+            k = mes_key(f, ano_ctx=None)
+            if k:
+                ultimo_anio = k[0]
+            else:
+                k = mes_key(f, ano_ctx=ultimo_anio)
+            if not k: continue
+            v = safe_float(row[i_v]) if len(row) > i_v and row[i_v] else 0.0
+            if v: filas.append({"k": k, "fecha": f, "importe": v})
+    return filas
 
 def fetch_manuales():
     log("Datos manuales: leyendo desde Sheet...")
@@ -1390,27 +1455,10 @@ def fetch_manuales():
     log(f"  Correo historico: {len(result['correo_hist'])} meses ({len(correo_s3)} registros)")
 
     # TN abono — leer desde solapa "TN Abono" del Sheet Ingresos y Gastos
-    tn_rows = leer_hoja(SHEET_ID_GASTOS, "Tiendanube_abono")
-    log(f"  TN Abono Sheet: {len(tn_rows)} filas")
+    tn_filas = _leer_tn_abono_filas()
     tn_acum = defaultdict(float)
-    if tn_rows:
-        h = [str(x).strip() for x in tn_rows[0]]
-        i_f = _col_idx(h, "fecha", "date") if mes_key(str(tn_rows[0][0]).strip()) is None else -1
-        data_rows = tn_rows[1:] if i_f >= 0 else tn_rows
-        i_f = max(i_f, 0)
-        i_v = 1  # columna B = importe
-        ultimo_anio = ANO
-        for row in data_rows:
-            f = str(row[i_f]).strip() if len(row) > i_f else ""
-            if not f: continue
-            k = mes_key(f, ano_ctx=None)
-            if k:
-                ultimo_anio = k[0]
-            else:
-                k = mes_key(f, ano_ctx=ultimo_anio)
-            if not k: continue
-            v = safe_float(row[i_v]) if len(row) > i_v and row[i_v] else 0.0
-            if v: tn_acum[k] += v
+    for x in tn_filas:
+        tn_acum[x["k"]] += x["importe"]
     result["com_tn"] = {k: -v for k, v in tn_acum.items() if k[0] >= ANO_DESDE}
     log(f"  TN abono: {len(result['com_tn'])} meses (desde Sheet)")
 

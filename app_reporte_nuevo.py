@@ -30,6 +30,9 @@ app.register_blueprint(tn_bp)
 from tiendanube_ruleta import ruleta_bp
 app.register_blueprint(ruleta_bp)
 
+from web_detalle import web_bp
+app.register_blueprint(web_bp)
+
 @app.after_request
 def no_cache_widget(response):
     if request.path == "/static/widget-ruleta.js":
