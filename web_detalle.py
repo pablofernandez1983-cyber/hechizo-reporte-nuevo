@@ -20,6 +20,17 @@ WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
 
 PAGADAS = "estado_pago IN ('paid', 'authorized')"
 
+# Agrupa los nombres de medio de pago que TN fue cambiando con los años (Getnet = antecesor de PagoNube).
+# Lleva %% porque todas las queries se ejecutan con parámetros.
+FORMA_SQL = """CASE
+    WHEN {c} ILIKE '%%mercado pago%%' THEN 'Mercado Pago'
+    WHEN {c} ILIKE '%%pago nube%%' OR {c} ILIKE '%%getnet%%' THEN 'Pago Nube / Getnet'
+    WHEN {c} ILIKE '%%transfer%%' OR {c} ILIKE '%%dep_sito%%' THEN 'Transferencia'
+    ELSE 'Otros' END"""
+
+def _forma(col="medio_pago"):
+    return FORMA_SQL.format(c=col)
+
 
 # ═══════════════════════════════════════════════════════════════
 # AUTH + HELPERS
@@ -149,7 +160,7 @@ C_VENTA = [
     {"key": "orden_id", "label": "Orden", "tipo": "texto"},
     {"key": "cliente", "label": "Cliente", "tipo": "texto"},
     {"key": "tipo", "label": "Tipo", "tipo": "texto", "filtro": True},
-    {"key": "medio_pago", "label": "Medio de pago", "tipo": "texto", "filtro": True},
+    {"key": "forma", "label": "Forma de pago", "tipo": "texto", "filtro": True},
     {"key": "carrier", "label": "Envío", "tipo": "texto", "filtro": True},
     {"key": "subtotal", "label": "Subtotal", "tipo": "money"},
     {"key": "descuento", "label": "Descuento", "tipo": "money"},
@@ -186,7 +197,7 @@ def _ventas_rubro(rubro, d, h):
     }
     valor, cond = exprs[rubro]
     filas = _q(f"""
-        SELECT orden_id::text AS orden_id, fecha, cliente, email, tipo, medio_pago, carrier,
+        SELECT orden_id::text AS orden_id, fecha, cliente, email, tipo, medio_pago, {_forma()} AS forma, carrier,
                estado_envio, tracking, subtotal, descuento, envio_cobrado, total,
                ({valor}) AS valor
         FROM ventas
@@ -434,7 +445,8 @@ def ventas():
             cond.append("EXISTS (SELECT 1 FROM ventas_detalle x WHERE x.orden_id = v.orden_id AND x.producto_id::text = %(pid)s)")
             params["pid"] = request.args["producto_id"]
         filas = _q(f"""
-            SELECT v.orden_id::text AS orden_id, v.fecha, v.cliente, v.email, v.tipo, v.medio_pago, v.carrier,
+            SELECT v.orden_id::text AS orden_id, v.fecha, v.cliente, v.email, v.tipo, v.medio_pago,
+                   {_forma("v.medio_pago")} AS forma, v.carrier,
                    v.estado_envio, v.subtotal, v.descuento, v.envio_cobrado, v.total,
                    COALESCE((SELECT SUM(cantidad) FROM ventas_detalle x WHERE x.orden_id = v.orden_id), 0) AS unidades
             FROM ventas v WHERE {' AND '.join(cond)}
@@ -448,7 +460,8 @@ def ventas():
 @web_bp.route("/orden/<orden_id>")
 def orden(orden_id):
     try:
-        o = _q("SELECT *, orden_id::text AS orden_id FROM ventas WHERE orden_id::text = %(id)s", {"id": orden_id})
+        o = _q(f"SELECT *, orden_id::text AS orden_id, {_forma()} AS forma FROM ventas WHERE orden_id::text = %(id)s",
+               {"id": orden_id})
         if not o:
             return jsonify({"ok": False, "error": "Orden no encontrada"}), 404
         items = _q("""
@@ -526,5 +539,37 @@ def clientes():
             GROUP BY 1 ORDER BY total DESC
         """, {"desde": desde, "hasta": hasta})
         return jsonify({"ok": True, "filas": filas})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════
+# COBRANZAS por forma de pago
+# ═══════════════════════════════════════════════════════════════
+
+@web_bp.route("/cobranzas")
+def cobranzas():
+    """Cobrado por mes y forma de pago (órdenes TN + ventas manuales del P&L) y comisiones de cobro."""
+    d, h = _periodo()
+    p = _params_periodo(d, h)
+    try:
+        filas = _q(f"""
+            SELECT anio, mes, {_forma()} AS forma, COUNT(*) AS ordenes, SUM(total) AS cobrado
+            FROM ventas WHERE {PAGADAS} AND {_sql_periodo()}
+            GROUP BY 1, 2, 3
+        """, p)
+        out = [{"mes": _km((r["anio"], r["mes"])), "forma": r["forma"],
+                "ordenes": r["ordenes"], "cobrado": r["cobrado"]} for r in filas]
+        comisiones = {}
+        for r in _q(f"""
+            SELECT anio, mes, rubro, monto FROM detalle_pnl
+            WHERE rubro IN ('ventas_manual', 'com_mp', 'com_pagonube') AND {_sql_periodo()}
+        """, p):
+            km = _km((r["anio"], r["mes"]))
+            if r["rubro"] == "ventas_manual":
+                out.append({"mes": km, "forma": "Ventas manuales", "ordenes": None, "cobrado": r["monto"]})
+            else:
+                comisiones.setdefault(km, {})[r["rubro"]] = r["monto"]
+        return jsonify({"ok": True, "filas": out, "comisiones": comisiones})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
