@@ -573,3 +573,90 @@ def cobranzas():
         return jsonify({"ok": True, "filas": out, "comisiones": comisiones})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════
+# GRÁFICOS: series mensuales, día/hora, recompra, productos que suben/bajan
+# ═══════════════════════════════════════════════════════════════
+
+CLI_SQL = "LOWER(COALESCE(NULLIF(email, ''), cliente))"
+HOY_AR = "(NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date"
+
+
+@web_bp.route("/analisis")
+def analisis():
+    try:
+        mensual = _q(f"""
+            WITH v AS (SELECT *, {CLI_SQL} AS cli FROM ventas WHERE {PAGADAS}),
+            primera AS (SELECT cli, MIN(fecha) AS f1 FROM v GROUP BY cli),
+            u AS (SELECT orden_id, SUM(cantidad) AS unidades FROM ventas_detalle GROUP BY orden_id)
+            SELECT TO_CHAR(v.fecha, 'YYYY-MM') AS mes,
+                   COUNT(*) AS ordenes, SUM(v.total) AS total, SUM(v.subtotal) AS subtotal,
+                   SUM(COALESCE(u.unidades, 0)) AS unidades,
+                   COUNT(DISTINCT v.cli) AS clientes,
+                   COUNT(DISTINCT v.cli) FILTER (WHERE DATE_TRUNC('month', p.f1) = DATE_TRUNC('month', v.fecha)) AS clientes_nuevos,
+                   COALESCE(SUM(v.total) FILTER (WHERE DATE_TRUNC('month', p.f1) = DATE_TRUNC('month', v.fecha)), 0) AS total_nuevos,
+                   COUNT(*) FILTER (WHERE COALESCE(v.envio_cobrado, 0) = 0) AS envio_gratis,
+                   COUNT(*) FILTER (WHERE v.carrier = 'correo') AS env_correo,
+                   COUNT(*) FILTER (WHERE v.carrier = 'andreani') AS env_andreani,
+                   COUNT(*) FILTER (WHERE v.carrier = 'moto') AS env_moto,
+                   COUNT(*) FILTER (WHERE v.carrier NOT IN ('correo', 'andreani', 'moto')) AS env_otro,
+                   COALESCE(SUM(v.envio_cobrado), 0) AS envio_cobrado
+            FROM v JOIN primera p USING (cli) LEFT JOIN u USING (orden_id)
+            GROUP BY 1 ORDER BY 1
+        """)
+        rec = _q(f"""
+            WITH o AS (
+                SELECT {CLI_SQL} AS cli, fecha, ROW_NUMBER() OVER (PARTITION BY {CLI_SQL} ORDER BY fecha, orden_id) AS rn
+                FROM ventas WHERE {PAGADAS}
+            ), c AS (SELECT cli, MAX(rn) AS n FROM o GROUP BY cli)
+            SELECT (SELECT COUNT(*) FROM c) AS clientes,
+                   (SELECT COUNT(*) FROM c WHERE n > 1) AS volvieron,
+                   (SELECT AVG(n) FROM c) AS compras_prom,
+                   (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY b.fecha - a.fecha)
+                      FROM o a JOIN o b ON a.cli = b.cli AND a.rn = 1 AND b.rn = 2) AS dias_a_segunda
+        """)
+        return jsonify({"ok": True, "mensual": mensual, "recompra": rec[0] if rec else None})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@web_bp.route("/dia-hora")
+def dia_hora():
+    """Órdenes por día de la semana (1=lunes) y hora, hora de Argentina."""
+    try:
+        desde, hasta = _rango_fechas()
+        filas = _q(f"""
+            SELECT EXTRACT(ISODOW FROM creada AT TIME ZONE 'America/Argentina/Buenos_Aires')::int AS dow,
+                   EXTRACT(HOUR FROM creada AT TIME ZONE 'America/Argentina/Buenos_Aires')::int AS hora,
+                   COUNT(*) AS ordenes, SUM(total) AS total
+            FROM ventas
+            WHERE {PAGADAS} AND creada IS NOT NULL AND fecha BETWEEN %(desde)s AND %(hasta)s
+            GROUP BY 1, 2
+        """, {"desde": desde, "hasta": hasta})
+        sin_hora = _q(f"""SELECT COUNT(*) AS n FROM ventas
+                          WHERE {PAGADAS} AND creada IS NULL AND fecha BETWEEN %(desde)s AND %(hasta)s""",
+                      {"desde": desde, "hasta": hasta})
+        return jsonify({"ok": True, "filas": filas, "sin_hora": sin_hora[0]["n"]})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@web_bp.route("/productos-cambio")
+def productos_cambio():
+    """Unidades y facturación de cada producto en los últimos N días vs los N días anteriores."""
+    try:
+        n = max(7, min(365, int(request.args.get("dias", 90))))
+        filas = _q(f"""
+            SELECT d.producto_id::text AS producto_id, MAX(d.producto_nombre) AS producto,
+                   COALESCE(SUM(d.cantidad) FILTER (WHERE v.fecha > {HOY_AR} - %(n)s), 0) AS u_act,
+                   COALESCE(SUM(d.cantidad) FILTER (WHERE v.fecha <= {HOY_AR} - %(n)s), 0) AS u_ant,
+                   COALESCE(SUM(d.cantidad * d.precio_unitario) FILTER (WHERE v.fecha > {HOY_AR} - %(n)s), 0) AS f_act,
+                   COALESCE(SUM(d.cantidad * d.precio_unitario) FILTER (WHERE v.fecha <= {HOY_AR} - %(n)s), 0) AS f_ant
+            FROM ventas_detalle d JOIN ventas v ON v.orden_id = d.orden_id
+            WHERE v.{PAGADAS} AND v.fecha > {HOY_AR} - 2 * %(n)s
+            GROUP BY d.producto_id
+        """, {"n": n})
+        return jsonify({"ok": True, "dias": n, "filas": filas})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500

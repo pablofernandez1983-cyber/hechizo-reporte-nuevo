@@ -289,19 +289,20 @@ def guardar_ventas_db(orders):
             o.get("payment_status",""), o.get("shipping_status",""),
             str(o.get("gateway_name","") or o.get("gateway","")),
             str(o.get("shipping_tracking_number","") or ""),
+            dt,
         ))
     sql = """
         INSERT INTO ventas
             (orden_id, fecha, anio, mes, cliente, email,
              subtotal, descuento, envio_cobrado, total,
-             tipo, carrier, estado_pago, estado_envio, medio_pago, tracking)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             tipo, carrier, estado_pago, estado_envio, medio_pago, tracking, creada)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (orden_id) DO UPDATE SET
             subtotal=EXCLUDED.subtotal, descuento=EXCLUDED.descuento,
             envio_cobrado=EXCLUDED.envio_cobrado, total=EXCLUDED.total,
             tipo=EXCLUDED.tipo, carrier=EXCLUDED.carrier,
             estado_pago=EXCLUDED.estado_pago, estado_envio=EXCLUDED.estado_envio,
-            tracking=EXCLUDED.tracking
+            tracking=EXCLUDED.tracking, creada=EXCLUDED.creada
     """
     ok = db_exec_many(sql, rows)
     if ok: log(f"  DB: {len(rows)} ventas guardadas")
