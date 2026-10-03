@@ -254,24 +254,30 @@ def _enrich_with_stock_product(rows):
     product_ids = list({r["product_id"] for r in rows})
     product_stock = {}  # product_id -> min stock across variants
 
-    for pid in product_ids:
-        store_id = os.environ.get("TIENDANUBE_STORE_ID", "")
+    store_id = os.environ.get("TIENDANUBE_STORE_ID", "")
+    headers  = _tn_headers(store_id) if store_id else None
+
+    def _stock_de(pid):
         if not store_id:
-            product_stock[pid] = None
-            continue
+            return None
         try:
             resp = _req.get(
                 f"https://api.tiendanube.com/v1/{store_id}/products/{pid}",
-                headers=_tn_headers(store_id), timeout=10,
+                headers=headers, timeout=10,
             )
             if resp.ok:
                 stocks = [v.get("stock") for v in resp.json().get("variants", [])]
                 stocks = [s for s in stocks if s is not None]
-                product_stock[pid] = min(stocks) if stocks else None
-            else:
-                product_stock[pid] = None
+                return min(stocks) if stocks else None
         except Exception:
-            product_stock[pid] = None
+            pass
+        return None
+
+    # En paralelo (antes era uno por uno y tardaba ~25 s con 18 productos)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for pid, stock in zip(product_ids, ex.map(_stock_de, product_ids)):
+            product_stock[pid] = stock
 
     for r in rows:
         r["current_stock"] = product_stock.get(r["product_id"])
