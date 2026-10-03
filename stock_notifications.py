@@ -68,6 +68,23 @@ exigir_clave(notify_bp, publicas={"notify.notify", "notify.notify_webhook"})
 REQUIRED_FIELDS = {"email", "product_id", "variant_id", "product_name", "variant_name"}
 
 
+_URL_HOSTS = {h.split("://", 1)[1] for h in WIDGET_ORIGINS}
+_URL_HOSTS |= {"www." + h for h in _URL_HOSTS}
+
+
+def _url_tienda(url):
+    """Devuelve la URL solo si es https y apunta a la tienda; si no, None.
+    (El link termina en un mail que sale de la cuenta de Hechizo: nunca a otro sitio.)"""
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(str(url or "").strip())
+    except ValueError:
+        return None
+    if u.scheme == "https" and u.hostname in _URL_HOSTS and not u.username and not u.port:
+        return u.geturl()
+    return None
+
+
 def _get_conn():
     import psycopg2
     return psycopg2.connect(DATABASE_URL, connect_timeout=10)
@@ -148,7 +165,7 @@ def notify():
     product_name = str(body["product_name"])[:255]
     variant_name = str(body["variant_name"])[:255]
     sku          = str(body.get("sku") or "")[:100] or None
-    product_url  = str(body.get("product_url") or "")[:500] or None
+    product_url  = _url_tienda(str(body.get("product_url") or "")[:500])
 
     conn = _get_conn()
     try:
@@ -488,6 +505,20 @@ def check_stock():
 
 # ── POST /notify/webhook  (Tiendanube push) ───────────────────────────────────
 
+def _registrar_firma_webhook():
+    """Por ahora solo REGISTRA si la firma HMAC de Tiendanube coincide (no bloquea).
+    Cuando los logs muestren siempre ok=<app>, pasar a rechazar las que no coinciden."""
+    import hashlib, hmac
+    recibida = request.headers.get("X-Linkedstore-Hmac-Sha256", "")
+    raw = request.get_data()
+    coincide = [
+        nombre for nombre, var in (("stock", "TN_APP_CLIENT_SECRET"), ("ruleta", "TN_RULETA_CLIENT_SECRET"))
+        if os.environ.get(var) and recibida and hmac.compare_digest(
+            recibida, hmac.new(os.environ[var].encode(), raw, hashlib.sha256).hexdigest())
+    ]
+    print(f"[WEBHOOK-HMAC] header={'si' if recibida else 'no'} ok={','.join(coincide) or 'ninguna'}", flush=True)
+
+
 @notify_bp.route("/notify/webhook", methods=["POST"])
 def notify_webhook():
     """
@@ -496,6 +527,7 @@ def notify_webhook():
     """
     import requests as _req
 
+    _registrar_firma_webhook()
     body = request.get_json(silent=True) or {}
     event      = body.get("event", "")
     product_id = body.get("id") or body.get("product_id")
@@ -782,12 +814,14 @@ def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
+    from html import escape as _hesc
+    product_name = " ".join(str(product_name or "").split())  # sin saltos de línea (va en el asunto)
     nombre_completo = product_name
     if variant_name and variant_name not in ("-", ""):
         nombre_completo += f" — {variant_name}"
+    nombre_completo = _hesc(nombre_completo)  # el nombre viene del navegador: escapar antes de meterlo en el HTML
 
-    from html import escape as _hesc
-    link     = product_url or "https://hechizo.com.ar"
+    link     = _url_tienda(product_url) or "https://hechizo.com.ar"
     link_safe = _hesc(link)
     subject  = f"¡{product_name} volvió a tener stock!"
 

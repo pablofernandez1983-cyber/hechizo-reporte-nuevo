@@ -90,10 +90,11 @@ def _enviar_mail_cupon(email, premio):
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
-    if not premio or premio == "nada":
+    # Solo premios conocidos: nunca meter en el mail texto que vino del navegador.
+    if premio not in MAIL_PREMIOS:
         return
 
-    titulo, desc = MAIL_PREMIOS.get(premio, (premio, f"Tu premio: {premio}"))
+    titulo, desc = MAIL_PREMIOS[premio]
     subject = f"Ganaste {titulo} en Hechizo"
 
     html = f"""<!DOCTYPE html>
@@ -414,6 +415,9 @@ def suscribir():
         r.set_data(jsonify({"error": "email inválido"}).get_data())
         r.content_type = "application/json"
         return r, 400
+
+    if premio != "nada" and premio not in MAIL_PREMIOS:
+        return _cors_response({"error": "premio inválido"}), 400
 
     if _production_launch_pending(store_id):
         return _cors_response({"error": "La ruleta estará disponible próximamente"}), 503

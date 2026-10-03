@@ -1,8 +1,7 @@
 """
 auth_clave.py — Exige la clave WEB_PASSWORD (la misma de /web/*).
 
-La clave va en el header X-Web-Key, o en ?clave=... para poder abrir la ruta desde
-la barra del navegador (ej. /ruleta/setup-script/1384618?clave=...).
+La clave va solo en el header X-Web-Key (nunca en la URL: quedaría en logs e historial).
 """
 
 import hmac
@@ -17,7 +16,7 @@ def chequear_clave():
     password = os.environ.get("WEB_PASSWORD", "")
     if not password:
         return jsonify({"ok": False, "error": "WEB_PASSWORD no configurada"}), 503
-    key = request.headers.get("X-Web-Key") or request.args.get("clave", "")
+    key = request.headers.get("X-Web-Key", "")
     if not hmac.compare_digest(key.encode(), password.encode()):
         time.sleep(0.5)
         return jsonify({"ok": False, "error": "Clave incorrecta"}), 401
