@@ -26,6 +26,7 @@ Cuándo actualizar TN_STATE_JSON:
 
 import json
 import os
+import re
 import csv
 import random
 import time
@@ -243,6 +244,62 @@ def export_pagonube(page) -> str | None:
 
 
 # =========================
+# FACTURAS DE TIENDANUBE (Planes y pagos > Facturación)
+# Lo que Tiendanube le cobra a la tienda. No está en la API pública.
+# El reporte suma "Plan" + "Nuvem Chat" de cada mes → solapa Tiendanube_abono.
+# =========================
+MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+            "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+RE_MES     = re.compile(r"\b(" + "|".join(MESES_ES) + r")\s+(20\d{2})\b", re.I)
+RE_FACTURA = re.compile(
+    r"(\d{2}/\d{2}/\d{2})\s*-\s*(\d{2}/\d{2}/\d{2})\s+"   # período
+    r"Factura\s+([A-Z])\s*#\s*(\d+)\s*-?\s*(.*?)\s*"      # tipo, número, concepto
+    r"\$\s*([\d.]+,\d{2})",                               # importe
+    re.S)
+
+
+def parsear_facturas(texto: str) -> list:
+    """Texto de la página de Facturación → [{mes, periodo, numero, concepto, importe}].
+
+    Cada factura queda en el mes del encabezado que la precede ("Septiembre 2026"),
+    que es el mismo mes con el que Lore cargaba la solapa a mano.
+    """
+    plano = re.sub(r"\s+", " ", texto)
+    meses = [(m.start(), f"{m.group(2)}-{MESES_ES.index(m.group(1).lower()) + 1:02d}")
+             for m in RE_MES.finditer(plano)]
+    facturas = []
+    for m in RE_FACTURA.finditer(plano):
+        previos = [mes for pos, mes in meses if pos < m.start()]
+        if not previos:
+            continue
+        facturas.append({
+            "mes": previos[-1],
+            "periodo": f"{m.group(1)} - {m.group(2)}",
+            "numero": f"{m.group(3)}-{m.group(4)}",
+            "concepto": m.group(5).strip(" -"),
+            "importe": float(m.group(6).replace(".", "").replace(",", ".")),
+        })
+    return facturas
+
+
+def export_facturas_tn(page) -> dict:
+    url = "https://hechizobijou.mitiendanube.com/admin/account/invoices"
+    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    if "code=" in page.url or "sessionId=" in page.url:
+        print("[WAIT] Redirect de re-auth detectado, esperando...")
+        page.wait_for_url("**/account/invoices", timeout=30000)
+    if "login" in page.url.lower():
+        raise RuntimeError(f"Facturación pidió login: {page.url}")
+    page.get_by_text(re.compile(r"Factura [A-Z]")).first.wait_for(timeout=30000)
+    pace(section=True)
+    texto = page.inner_text("body")
+    facturas = parsear_facturas(texto)
+    print(f"[OK] Facturas TN: {len(facturas)} leídas")
+    return {"facturas": facturas, "texto": texto}
+
+
+# =========================
 # MAIN
 # =========================
 def run():
@@ -272,6 +329,13 @@ def run():
         page = context.new_page()
         csv_text = export_pagonube(page)
 
+        # Aparte: si Facturación falla, PagoNube igual se sube
+        try:
+            fact = export_facturas_tn(page)
+        except Exception as e:
+            print(f"[WARN] Facturas TN: {e}")
+            fact = None
+
         context.close()
         browser.close()
 
@@ -290,6 +354,12 @@ def run():
     from datetime import date
     meta = json.dumps({"ultimo_exito": date.today().isoformat()}).encode("utf-8")
     subir_a_s3(meta, "pagonube_last_run.json")
+
+    if fact:
+        from datetime import datetime
+        fact["leido"] = datetime.now().isoformat(timespec="seconds")
+        subir_a_s3(json.dumps(fact, ensure_ascii=False).encode("utf-8"),
+                   "tn_facturas.json")
 
     print("=" * 55)
     print("COMPLETADO OK")
