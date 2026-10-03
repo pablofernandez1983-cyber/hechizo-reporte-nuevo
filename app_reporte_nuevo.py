@@ -33,6 +33,46 @@ app.register_blueprint(ruleta_bp)
 from web_detalle import web_bp
 app.register_blueprint(web_bp)
 
+from auth_clave import chequear_clave
+
+# Rutas que usa la app del celu (index.html): exigen la misma clave que /web/*.
+# /ping queda abierta (despierta el servidor); los blueprints tienen su propio chequeo.
+_ENDPOINTS_CON_CLAVE = {
+    "ejecutar", "ver_estado", "ver_tokens", "ver_logs", "historico", "historico_mensual",
+    "historico_rango", "stock_debug", "stock_data", "stock", "sheet_values",
+}
+
+
+@app.before_request
+def _auth_app():
+    if request.method == "OPTIONS" or request.endpoint not in _ENDPOINTS_CON_CLAVE:
+        return None
+    return chequear_clave()
+
+
+# Proxy de lectura del Sheet RESUMEN para la app del celu (así el Sheet no tiene que
+# estar compartido por link). Solo las solapas del P&L y Trigger, nunca Ventas_diarias.
+import re as _re
+_SOLAPAS_APP = _re.compile(r"^(20\d\d|20\d\d detalle|Trigger)$")
+
+
+@app.route("/sheet-values")
+def sheet_values():
+    from reporte_nuevo import get_svc, SHEET_ID_RESUMEN
+    rango = request.args.get("range", "")
+    solapa = rango.split("!", 1)[0].strip("'")
+    if not _SOLAPAS_APP.match(solapa):
+        return jsonify({"ok": False, "error": f"rango no permitido: {rango}"}), 403
+    kwargs = dict(spreadsheetId=SHEET_ID_RESUMEN, range=rango)
+    if request.args.get("valueRenderOption") == "UNFORMATTED_VALUE":
+        kwargs["valueRenderOption"] = "UNFORMATTED_VALUE"
+    try:
+        res = get_svc().spreadsheets().values().get(**kwargs).execute()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:300]}), 502
+    return jsonify({"ok": True, "range": res.get("range"), "values": res.get("values", [])})
+
+
 @app.after_request
 def no_cache_widget(response):
     if request.path == "/static/widget-ruleta.js":
