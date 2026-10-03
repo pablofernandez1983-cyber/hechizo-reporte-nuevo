@@ -33,6 +33,9 @@ app.register_blueprint(ruleta_bp)
 from web_detalle import web_bp
 app.register_blueprint(web_bp)
 
+from recurrentes import rec_bp
+app.register_blueprint(rec_bp)
+
 from auth_clave import chequear_clave
 
 # Rutas que usa la app del celu (index.html): exigen la misma clave que /web/*.

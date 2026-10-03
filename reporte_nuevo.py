@@ -1448,6 +1448,13 @@ def fetch_manuales():
     log("Datos manuales: leyendo desde Sheet...")
     result = {}
 
+    # Antes de leer: abono de Tiendanube del mes desde Facturación (ver recurrentes.py)
+    try:
+        from recurrentes import sync_tn_abono
+        sync_tn_abono()
+    except Exception as e:
+        log(f"  [WARN] TN abono auto: {e}")
+
     result["ventas_manual"] = _leer_solapa(["Ventas","ventas"], 2, True, "Ventas manuales")
     result["compras"] = _leer_solapa(
         ["Compra Materia prima - Producto","Compras","compras"], 3, False, "Compras")
