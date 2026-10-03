@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 import requests as http
 from flask import Blueprint, jsonify, make_response, redirect, request
 
+from auth_clave import exigir_clave
+
 TN_CLIENT_ID     = os.environ.get("TN_RULETA_CLIENT_ID", "")
 TN_CLIENT_SECRET = os.environ.get("TN_RULETA_CLIENT_SECRET", "")
 
@@ -40,6 +42,13 @@ RULETA_LAUNCH_AT = datetime(2026, 6, 16, 3, 0, tzinfo=timezone.utc)
 RULETA_PREVIEW_CODE = "P9YS4XOcHL_mFgrjoKuMx7jw"
 
 ruleta_bp = Blueprint("tiendanube_ruleta", __name__)
+
+# Abiertas: el widget de la tienda (participar/suscribir) y el flujo OAuth (install/callback).
+# El resto (setup-script, remove-script, list-scripts, test-token) exige la clave de /web/*.
+exigir_clave(ruleta_bp, publicas={
+    "tiendanube_ruleta.participar", "tiendanube_ruleta.suscribir",
+    "tiendanube_ruleta.install", "tiendanube_ruleta.callback",
+})
 
 
 # ── helpers DB ────────────────────────────────────────────────────────────────

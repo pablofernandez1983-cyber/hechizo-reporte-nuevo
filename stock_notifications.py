@@ -19,6 +19,8 @@ import threading
 from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
 
+from auth_clave import exigir_clave
+
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 WIDGET_ORIGINS = [
@@ -61,22 +63,7 @@ notify_bp = Blueprint("notify", __name__)
 
 # Rutas que quedan abiertas: el alta desde el widget de la tienda y el webhook de TN.
 # Todo lo demás (listar mails, borrar, enviar) exige la misma clave que /web/*.
-_RUTAS_PUBLICAS = {"notify.notify", "notify.notify_webhook"}
-WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
-
-
-@notify_bp.before_request
-def _auth():
-    if request.method == "OPTIONS" or request.endpoint in _RUTAS_PUBLICAS:
-        return None
-    import hmac, time
-    if not WEB_PASSWORD:
-        return jsonify({"ok": False, "error": "WEB_PASSWORD no configurada"}), 503
-    key = request.headers.get("X-Web-Key", "")
-    if not hmac.compare_digest(key.encode(), WEB_PASSWORD.encode()):
-        time.sleep(0.5)
-        return jsonify({"ok": False, "error": "Clave incorrecta"}), 401
-    return None
+exigir_clave(notify_bp, publicas={"notify.notify", "notify.notify_webhook"})
 
 REQUIRED_FIELDS = {"email", "product_id", "variant_id", "product_name", "variant_name"}
 

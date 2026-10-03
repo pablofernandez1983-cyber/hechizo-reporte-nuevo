@@ -12,6 +12,8 @@ import os
 import requests as http
 from flask import Blueprint, jsonify, redirect, request
 
+from auth_clave import exigir_clave
+
 TN_CLIENT_ID     = os.environ.get("TN_APP_CLIENT_ID", "")
 TN_CLIENT_SECRET = os.environ.get("TN_APP_CLIENT_SECRET", "")
 
@@ -23,6 +25,10 @@ USER_AGENT   = "HechizoBijou-Stock/1.0 (hechizobijou@gmail.com)"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 tn_bp = Blueprint("tiendanube", __name__)
+
+# install/callback quedan abiertas (las usa el flujo OAuth de Tiendanube desde el navegador).
+# El resto (setup-script, setup-webhook, list-*, test-token) exige la clave de /web/*.
+exigir_clave(tn_bp, publicas={"tiendanube.install", "tiendanube.callback"})
 
 
 # ── helpers DB ────────────────────────────────────────────────────────────────
