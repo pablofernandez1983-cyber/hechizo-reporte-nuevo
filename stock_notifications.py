@@ -59,6 +59,25 @@ TN_HEADERS = lambda: _tn_headers()
 
 notify_bp = Blueprint("notify", __name__)
 
+# Rutas que quedan abiertas: el alta desde el widget de la tienda y el webhook de TN.
+# Todo lo demás (listar mails, borrar, enviar) exige la misma clave que /web/*.
+_RUTAS_PUBLICAS = {"notify.notify", "notify.notify_webhook"}
+WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
+
+
+@notify_bp.before_request
+def _auth():
+    if request.method == "OPTIONS" or request.endpoint in _RUTAS_PUBLICAS:
+        return None
+    import hmac, time
+    if not WEB_PASSWORD:
+        return jsonify({"ok": False, "error": "WEB_PASSWORD no configurada"}), 503
+    key = request.headers.get("X-Web-Key", "")
+    if not hmac.compare_digest(key.encode(), WEB_PASSWORD.encode()):
+        time.sleep(0.5)
+        return jsonify({"ok": False, "error": "Clave incorrecta"}), 401
+    return None
+
 REQUIRED_FIELDS = {"email", "product_id", "variant_id", "product_name", "variant_name"}
 
 
@@ -327,7 +346,7 @@ def notify_stats():
 # ── POST /notify/send/<variant_id>  (manual) ──────────────────────────────────
 
 @notify_bp.route("/notify/send/<int:variant_id>", methods=["POST", "OPTIONS"])
-@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
+@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type", "X-Web-Key"])
 def notify_send(variant_id):
     if request.method == "OPTIONS":
         return jsonify({}), 200
@@ -353,7 +372,7 @@ def notify_send(variant_id):
 # ── POST /notify/check-stock  (manual o cron) ─────────────────────────────────
 
 @notify_bp.route("/notify/check-stock", methods=["POST", "OPTIONS"])
-@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
+@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type", "X-Web-Key"])
 def check_stock():
     if request.method == "OPTIONS":
         return jsonify({}), 200
@@ -581,7 +600,7 @@ def notify_webhook():
 # ── POST /notify/send-product/<product_id>  (manual por producto) ────────────
 
 @notify_bp.route("/notify/send-product/<int:product_id>", methods=["POST", "OPTIONS"])
-@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
+@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type", "X-Web-Key"])
 def notify_send_product(product_id):
     if request.method == "OPTIONS":
         return jsonify({}), 200
@@ -605,7 +624,7 @@ def notify_send_product(product_id):
 # ── DELETE /notify/product/<product_id>  (bulk discard por producto) ──────────
 
 @notify_bp.route("/notify/product/<int:product_id>", methods=["DELETE", "OPTIONS"])
-@cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type"])
+@cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type", "X-Web-Key"])
 def notify_delete_product(product_id):
     if request.method == "OPTIONS":
         return jsonify({}), 200
@@ -626,7 +645,7 @@ def notify_delete_product(product_id):
 # ── DELETE /notify/<notif_id>  (soft cancel) ──────────────────────────────────
 
 @notify_bp.route("/notify/<int:notif_id>", methods=["DELETE", "OPTIONS"])
-@cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type"])
+@cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type", "X-Web-Key"])
 def notify_delete(notif_id):
     if request.method == "OPTIONS":
         return jsonify({}), 200
@@ -646,7 +665,7 @@ def notify_delete(notif_id):
 # ── POST /notify/<notif_id>/restore ───────────────────────────────────────────
 
 @notify_bp.route("/notify/<int:notif_id>/restore", methods=["POST", "OPTIONS"])
-@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
+@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type", "X-Web-Key"])
 def notify_restore(notif_id):
     if request.method == "OPTIONS":
         return jsonify({}), 200
@@ -666,7 +685,7 @@ def notify_restore(notif_id):
 # ── DELETE /notify/variant/<variant_id>  (bulk discard) ───────────────────────
 
 @notify_bp.route("/notify/variant/<int:variant_id>", methods=["DELETE", "OPTIONS"])
-@cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type"])
+@cross_origin(origins="*", methods=["DELETE", "OPTIONS"], allow_headers=["Content-Type", "X-Web-Key"])
 def notify_delete_variant(variant_id):
     if request.method == "OPTIONS":
         return jsonify({}), 200
