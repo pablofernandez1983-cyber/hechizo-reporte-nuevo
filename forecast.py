@@ -221,6 +221,49 @@ def calcular(gran, ventas, ahora):
     }
 
 
+def futuros(gran, ventas, ahora, hasta):
+    """Proyección de los períodos completos que faltan después del actual, hasta `hasta`
+    (inclusive; el último se recorta en esa fecha). Ritmo diario de los últimos 3 meses en
+    pesos de hoy × peso del día de la semana × inflación esperada hasta ese día.
+    Backtest (meses 1..6 adelante): error 14-22%, sin sesgo; agregarle estacionalidad del
+    año pasado dio peor, incluso para noviembre/diciembre."""
+    indice, _ = _indice_precios()
+    hoy = datetime(ahora.year, ahora.month, ahora.day)
+    ref = indice(hoy)
+    _, fin_actual, _ = _limites(gran, ahora)
+
+    w_ini = _menos_meses(hoy, 3)
+    n_w = (hoy - w_ini).days
+    real_w = cant_w = 0.0
+    por_dow = [0.0] * 7
+    p_ini = hoy - timedelta(days=DIAS_PERFIL)
+    for t, tot in ventas:
+        if t >= hoy:
+            continue
+        if t >= w_ini:
+            real_w += tot * ref / indice(t)
+            cant_w += 1
+        if t >= p_ini:
+            por_dow[t.weekday()] += tot
+    tot_dow = sum(por_dow) or 1
+    factor_dow = [7 * x / tot_dow for x in por_dow] if sum(por_dow) else [1.0] * 7
+    diario_real, diario_cant = real_w / n_w, cant_w / n_w
+
+    out, ini = [], fin_actual
+    while ini <= hasta:
+        fin = _limites(gran, ini)[1]
+        tot = cant = 0.0
+        d = ini
+        while d < fin and d <= hasta:
+            f = factor_dow[d.weekday()]
+            tot += diario_real * f * indice(d + timedelta(hours=12)) / ref
+            cant += diario_cant * f
+            d += timedelta(days=1)
+        out.append({"periodo": _limites(gran, ini)[2], "total": round(tot), "cantidad": round(cant, 1)})
+        ini = fin
+    return out
+
+
 def _leer_ventas(desde):
     import psycopg2
     conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
@@ -239,11 +282,19 @@ def _leer_ventas(desde):
 
 @forecast_bp.route("/forecast")
 def forecast():
-    """Proyección de cierre del período en curso. Query: granularidad=dia|semana|mes."""
+    """Proyección de cierre del período en curso. Query: granularidad=dia|semana|mes y
+    opcional hasta=YYYY-MM-DD para proyectar también los períodos siguientes (`futuros`)."""
     gran = request.args.get("granularidad", "dia")
     if gran not in ("dia", "semana", "mes"):
         gran = "dia"
-    cache = _resp_cache.get(gran)
+    hasta_txt = request.args.get("hasta", "")
+    try:
+        hasta = datetime.strptime(hasta_txt, "%Y-%m-%d") if hasta_txt else None
+    except ValueError:
+        return jsonify({"ok": False, "error": "hasta debe ser YYYY-MM-DD"}), 400
+    if hasta and hasta > datetime.now() + timedelta(days=400):
+        return jsonify({"ok": False, "error": "hasta: como máximo ~1 año adelante"}), 400
+    cache = _resp_cache.get((gran, hasta_txt))
     if cache and time.time() - cache[0] < RESP_TTL:
         return jsonify(cache[1])
     try:
@@ -251,8 +302,11 @@ def forecast():
         ahora = datetime.now(ZoneInfo(TZ)).replace(tzinfo=None)
         ini, _, _ = _limites(gran, ahora)
         desde = _menos_meses(ini, MESES_PERFIL) - timedelta(days=DIAS_PERFIL if gran != "mes" else 0)
-        res = calcular(gran, _leer_ventas(desde), ahora)
-        _resp_cache[gran] = (time.time(), res)
+        ventas = _leer_ventas(desde)
+        res = calcular(gran, ventas, ahora)
+        if hasta:
+            res["futuros"] = futuros(gran, ventas, ahora, hasta)
+        _resp_cache[(gran, hasta_txt)] = (time.time(), res)
         return jsonify(res)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
