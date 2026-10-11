@@ -5,8 +5,11 @@ solapa Estadísticas de la app.
     proyección = vendido + base × (1 − F) × k
 
 - base: lo que se vende "normalmente" en un período así, sacado SOLO de historia reciente
-  (28 días / 8 semanas / 3 meses) y llevado a pesos de hoy con el IPC. Con la inflación y
-  el crecimiento del negocio, comparar contra el año pasado da peor.
+  (28 días / 8 semanas / 3 meses) y llevado a pesos de hoy con la inflación propia de
+  Hechizo (índice de precios de la tienda; IPC general sólo si no se puede calcular). Con la
+  inflación y el crecimiento del negocio, comparar contra el año pasado da peor.
+  Backtest índice Hechizo vs IPC (meses 1-3 adelante): mismo error; desde nov-25, cuando los
+  precios de la tienda empezaron a subir menos que el IPC, la mitad de sesgo (IPC se pasaba).
 - F: qué fracción del período suele estar vendida a esta altura (perfil por hora del día,
   por día+hora de la semana, o por avance del mes). La historia vieja solo se usa para
   esta forma, que no depende del tamaño del negocio.
@@ -71,13 +74,9 @@ def _ipc_mensual():
     return _ipc_cache["meses"]
 
 
-def _indice_precios():
-    """Función fecha → nivel de precios (interpolado diario, anclado a mitad de mes y
-    extrapolado con la inflación promedio de los últimos 3 meses publicados).
-    Sin IPC devuelve una constante (= pesos nominales)."""
-    meses = _ipc_mensual()
-    if not meses:
-        return (lambda d: 1.0), False
+def _funcion_indice(meses):
+    """{(año, mes): nivel} → función fecha → nivel de precios (interpolado diario, anclado
+    a mitad de mes y extrapolado con la variación promedio de los últimos 3 meses conocidos)."""
     claves = sorted(meses)
     tasa = (meses[claves[-1]] / meses[claves[-4]]) ** (1 / 3)
 
@@ -104,7 +103,15 @@ def _indice_precios():
             t = (d - ant) / (ancla - ant)
         return a * (b / a) ** t   # interpolación geométrica
 
-    return indice, True
+    return indice
+
+
+def _indice_precios():
+    """Índice del IPC general. Sin IPC devuelve una constante (= pesos nominales)."""
+    meses = _ipc_mensual()
+    if not meses:
+        return (lambda d: 1.0), False
+    return _funcion_indice(meses), True
 
 
 # ─────────────────────────── períodos ───────────────────────────
@@ -147,10 +154,13 @@ def _F(curva, frac):
 
 # ─────────────────────────── cálculo ───────────────────────────
 
-def calcular(gran, ventas, ahora):
-    """ventas: lista de (creada_AR naive, total). Devuelve el dict de la proyección."""
+def calcular(gran, ventas, ahora, indice=None):
+    """ventas: lista de (creada_AR naive, total). Devuelve el dict de la proyección.
+    indice: función fecha → nivel de precios; por defecto la inflación de Hechizo."""
     ini, fin, periodo = _limites(gran, ahora)
-    indice, hay_ipc = _indice_precios()
+    hay_ipc = True
+    if indice is None:
+        indice, hay_ipc = _indice_por_defecto()
     ref = indice(ini)
     ajuste = indice(ini + (fin - ini) / 2) / ref   # inflación esperada dentro del período
 
@@ -222,13 +232,14 @@ def calcular(gran, ventas, ahora):
     }
 
 
-def futuros(gran, ventas, ahora, hasta):
+def futuros(gran, ventas, ahora, hasta, indice=None):
     """Proyección de los períodos completos que faltan después del actual, hasta `hasta`
     (inclusive; el último se recorta en esa fecha). Ritmo diario de los últimos 3 meses en
     pesos de hoy × peso del día de la semana × inflación esperada hasta ese día.
     Backtest (meses 1..6 adelante): error 14-22%, sin sesgo; agregarle estacionalidad del
     año pasado dio peor, incluso para noviembre/diciembre."""
-    indice, _ = _indice_precios()
+    if indice is None:
+        indice, _ = _indice_por_defecto()
     hoy = datetime(ahora.year, ahora.month, ahora.day)
     ref = indice(hoy)
     _, fin_actual, _ = _limites(gran, ahora)
@@ -374,6 +385,34 @@ def _leer_precios_mensuales():
         conn.close()
 
 
+def _niveles_hechizo():
+    """{'YYYY-MM': nivel} del índice Hechizo (cacheado HZ_TTL)."""
+    if _hz_cache.get("niveles") is None or time.time() - _hz_cache.get("niveles_ts", 0) >= HZ_TTL:
+        _hz_cache["niveles"] = indice_hechizo(_leer_precios_mensuales())
+        _hz_cache["niveles_ts"] = time.time()
+    return _hz_cache["niveles"]
+
+
+def indice_hechizo_fn(niveles, antes_de):
+    """Función fecha → nivel con los meses COMPLETOS anteriores a `antes_de` (el mes en
+    curso tiene pocas ventas y mueve el índice); de ahí en más, extrapolado."""
+    lim = antes_de.strftime("%Y-%m")
+    meses = {(int(k[:4]), int(k[5:])): v for k, v in niveles.items() if k < lim}
+    return _funcion_indice(meses) if len(meses) >= 4 else None
+
+
+def _indice_por_defecto():
+    """Inflación de Hechizo (sus precios siguen a los proveedores). Si no se puede calcular,
+    IPC general; si tampoco, nominal. Devuelve (función, hay_ajuste)."""
+    try:
+        f = indice_hechizo_fn(_niveles_hechizo(), datetime.now())
+        if f:
+            return f, True
+    except Exception as e:
+        print(f"[WARN] forecast: índice Hechizo no disponible ({e}); se usa IPC")
+    return _indice_precios()
+
+
 @forecast_bp.route("/forecast/indice-hechizo")
 def forecast_indice_hechizo():
     """Nivel de precios de Hechizo por mes ("YYYY-MM" → índice), para ver montos en pesos de
@@ -382,7 +421,7 @@ def forecast_indice_hechizo():
     if _hz_cache["res"] and time.time() - _hz_cache["ts"] < HZ_TTL:
         return jsonify(_hz_cache["res"])
     try:
-        niveles = indice_hechizo(_leer_precios_mensuales())
+        niveles = _niveles_hechizo()
         meses = sorted(niveles)
         ultimo = meses[-1]
         # el mes en curso suele estar incompleto: la extrapolación parte del último completo
