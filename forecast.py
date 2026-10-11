@@ -21,6 +21,7 @@ día 33% vs 60%, semana 13% vs 41%, mes 8% vs 41%.
 import os
 import time
 import calendar
+import math
 from datetime import datetime, timedelta
 
 import requests
@@ -296,6 +297,112 @@ def forecast_ipc():
         out[d.strftime("%Y-%m")] = round(indice(d), 4)
         d = datetime(d.year + (d.month == 12), d.month % 12 + 1, 15)
     return jsonify({"ok": True, "meses": out, "publicado_hasta": f"{ultimo[0]}-{ultimo[1]:02d}"})
+
+
+# ─────────────────────────── índice de precios Hechizo ───────────────────────────
+# Cuánto subieron los precios de la tienda: mismo producto (variante) mes contra mes,
+# GEKS-Törnqvist con ventana móvil de 13 meses y empalme por movimiento (método de los
+# institutos de estadística para datos de ventas; no se desvía con cambios de catálogo ni
+# promociones). Verificado contra la comparación interanual directa del mismo producto.
+HZ_TTL = 12 * 3600
+HZ_VENTANA = 13
+HZ_MIN_ITEMS = 8
+_hz_cache = {"ts": 0, "res": None}
+
+
+def _tornqvist(A, B):
+    """ln del índice entre dos meses. A, B: {item: (precio_mediano, facturacion)}."""
+    comunes = A.keys() & B.keys()
+    if len(comunes) < HZ_MIN_ITEMS:
+        return None
+    ra = sum(A[i][1] for i in comunes) or 1
+    rb = sum(B[i][1] for i in comunes) or 1
+    tot = 0.0
+    for i in comunes:
+        lr = max(-1.5, min(1.5, math.log(B[i][0] / A[i][0])))
+        tot += (A[i][1] / ra + B[i][1] / rb) / 2 * lr
+    return tot
+
+
+def indice_hechizo(filas):
+    """filas: [(mes 'YYYY-MM', item, precio_mediano, facturacion)] → {mes: nivel}."""
+    por_mes = {}
+    for mes, item, precio, rev in filas:
+        if precio and precio > 0:
+            por_mes.setdefault(mes, {})[item] = (float(precio), float(rev or 0))
+    meses = sorted(por_mes)
+    cache = {}
+
+    def lt(i, j):
+        if i == j:
+            return 0.0
+        if (i, j) not in cache:
+            v = _tornqvist(por_mes[meses[i]], por_mes[meses[j]])
+            cache[(i, j)], cache[(j, i)] = v, (None if v is None else -v)
+        return cache[(i, j)]
+
+    def geks(ini, t):
+        vals = [lt(ini, l) + lt(l, t) for l in range(ini, t + 1)
+                if lt(ini, l) is not None and lt(l, t) is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    ln = [0.0]
+    for t in range(1, len(meses)):
+        ini = max(0, t - HZ_VENTANA + 1)
+        a, b = geks(ini, t - 1), geks(ini, t)
+        ln.append(ln[-1] + (b - a if a is not None and b is not None else 0.0))
+    return {m: math.exp(v) for m, v in zip(meses, ln)}
+
+
+def _leer_precios_mensuales():
+    import psycopg2
+    conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT TO_CHAR(v.fecha, 'YYYY-MM') AS mes,
+                   COALESCE(d.variante_id, d.producto_id) AS item,
+                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY d.precio_unitario) AS precio,
+                   SUM(d.precio_unitario * d.cantidad) AS rev
+            FROM ventas_detalle d JOIN ventas v USING (orden_id)
+            WHERE v.estado_pago IN ('paid', 'authorized')
+              AND d.precio_unitario > 0 AND d.cantidad > 0
+            GROUP BY 1, 2
+        """)
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+@forecast_bp.route("/forecast/indice-hechizo")
+def forecast_indice_hechizo():
+    """Nivel de precios de Hechizo por mes ("YYYY-MM" → índice), para ver montos en pesos de
+    hoy según la inflación propia. Los meses siguientes al último con ventas se extrapolan
+    con la variación promedio de los 3 meses previos, hasta fin del año que viene."""
+    if _hz_cache["res"] and time.time() - _hz_cache["ts"] < HZ_TTL:
+        return jsonify(_hz_cache["res"])
+    try:
+        niveles = indice_hechizo(_leer_precios_mensuales())
+        meses = sorted(niveles)
+        ultimo = meses[-1]
+        # el mes en curso suele estar incompleto: la extrapolación parte del último completo
+        base = meses[-2] if len(meses) > 4 else ultimo
+        i = meses.index(base)
+        tasa = (niveles[base] / niveles[meses[i - 3]]) ** (1 / 3)
+        out = {m: round(v * 100 / niveles[meses[0]], 4) for m, v in niveles.items()}
+        y, m = int(ultimo[:4]), int(ultimo[5:])
+        n = 1
+        while y <= datetime.now().year + 1:
+            m += 1
+            if m > 12:
+                y, m = y + 1, 1
+            out[f"{y}-{m:02d}"] = round(out[ultimo] * tasa ** n, 4)
+            n += 1
+        res = {"ok": True, "meses": out, "ultimo_real": ultimo}
+        _hz_cache.update(ts=time.time(), res=res)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @forecast_bp.route("/forecast")
