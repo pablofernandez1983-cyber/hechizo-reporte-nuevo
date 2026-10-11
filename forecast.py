@@ -280,6 +280,24 @@ def _leer_ventas(desde):
         conn.close()
 
 
+@forecast_bp.route("/forecast/ipc")
+def forecast_ipc():
+    """Nivel de precios por mes ("YYYY-MM" → índice, mitad de mes) para pasar montos a pesos
+    de hoy en la app. Incluye los meses todavía no publicados (extrapolados) hasta fin del
+    año que viene, con la misma regla que usa el forecast."""
+    indice, hay_ipc = _indice_precios()
+    if not hay_ipc:
+        return jsonify({"ok": False, "error": "IPC no disponible"}), 503
+    meses = _ipc_mensual()
+    ultimo = max(meses)
+    hoy = datetime.now()
+    out, d = {}, datetime(2022, 1, 15)
+    while d.year <= hoy.year + 1:
+        out[d.strftime("%Y-%m")] = round(indice(d), 4)
+        d = datetime(d.year + (d.month == 12), d.month % 12 + 1, 15)
+    return jsonify({"ok": True, "meses": out, "publicado_hasta": f"{ultimo[0]}-{ultimo[1]:02d}"})
+
+
 @forecast_bp.route("/forecast")
 def forecast():
     """Proyección de cierre del período en curso. Query: granularidad=dia|semana|mes y
