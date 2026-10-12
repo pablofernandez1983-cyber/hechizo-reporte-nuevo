@@ -39,6 +39,9 @@ app.register_blueprint(rec_bp)
 from forecast import forecast_bp
 app.register_blueprint(forecast_bp)
 
+from tiktok_app import tiktok_bp
+app.register_blueprint(tiktok_bp)
+
 from auth_clave import chequear_clave
 
 # Rutas que usa la app del celu (index.html): exigen la misma clave que /web/*.
