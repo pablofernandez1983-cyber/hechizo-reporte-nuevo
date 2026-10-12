@@ -131,3 +131,11 @@ def callback():
 @tiktok_bp.route("/tiktok/tiktokLDDN7vbjSVJiXzmY1gvMwNmwWNpwRL9D.txt")
 def verificacion_url():
     return "tiktok-developers-site-verification=LDDN7vbjSVJiXzmY1gvMwNmwWNpwRL9D", 200, {"Content-Type": "text/plain"}
+
+
+@tiktok_bp.route("/tiktok/")
+def inicio():
+    return _PAGE.format(title="Hechizo Studio", body="""<h1>Hechizo Studio</h1>
+<p>Herramienta interna de <a href="https://hechizobijou.com.ar">Hechizo Bijou</a> para publicar videos propios de la marca
+en su cuenta oficial de TikTok, <a href="https://www.tiktok.com/@hechizo.com.ar">@hechizo.com.ar</a>.</p>
+<p><a href="/tiktok/terms">Términos de uso</a> · <a href="/tiktok/privacy">Política de privacidad</a></p>""")
