@@ -125,3 +125,9 @@ def callback():
         return _PAGE.format(title="Hechizo Studio", body=f"<p>No se pudo completar la conexión ({resp.status_code}).</p>"), 502
     _save_tokens(d)
     return _PAGE.format(title="Hechizo Studio", body=f"<h1>Listo ✨</h1><p>TikTok quedó conectado (permisos: {d.get('scope')}). Ya podés cerrar esta pestaña.</p>")
+
+
+# Archivo de verificación de "URL properties" (prefijo /tiktok/) de TikTok for Developers.
+@tiktok_bp.route("/tiktok/tiktokLDDN7vbjSVJiXzmY1gvMwNmwWNpwRL9D.txt")
+def verificacion_url():
+    return "tiktok-developers-site-verification=LDDN7vbjSVJiXzmY1gvMwNmwWNpwRL9D", 200, {"Content-Type": "text/plain"}
