@@ -24,7 +24,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY", "")
 CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET", "")
 REDIRECT_URI = "https://hechizo-reporte-nuevo-production.up.railway.app/tiktok/callback"
-SCOPES = "user.info.basic,video.upload,video.publish"
+SCOPES = "user.info.basic,user.info.stats,video.list,video.upload,video.publish"
 
 _states = {}  # state -> timestamp (anti-CSRF del flujo OAuth; vive lo que vive el proceso)
 
