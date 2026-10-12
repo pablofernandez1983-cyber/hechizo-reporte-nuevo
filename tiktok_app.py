@@ -139,3 +139,36 @@ def inicio():
 <p>Herramienta interna de <a href="https://hechizobijou.com.ar">Hechizo Bijou</a> para publicar videos propios de la marca
 en su cuenta oficial de TikTok, <a href="https://www.tiktok.com/@hechizo.com.ar">@hechizo.com.ar</a>.</p>
 <p><a href="/tiktok/terms">Términos de uso</a> · <a href="/tiktok/privacy">Política de privacidad</a></p>""")
+
+
+@tiktok_bp.route("/tiktok/access-token")
+def access_token():
+    """Devuelve un access_token vigente (lo renueva con el refresh_token si hace falta). Exige X-Web-Key."""
+    from flask import jsonify
+    from auth_clave import chequear_clave
+    err = chequear_clave()
+    if err:
+        return err
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT open_id, access_token, refresh_token, expires_at FROM tiktok_tokens ORDER BY updated_at DESC LIMIT 1")
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"ok": False, "error": "TikTok no está conectado (/tiktok/install)"}), 404
+    open_id, token, refresh, expires_at = row
+    if expires_at and expires_at > datetime.now(timezone.utc) + timedelta(minutes=10):
+        return jsonify({"ok": True, "open_id": open_id, "access_token": token})
+    resp = http.post("https://open.tiktokapis.com/v2/oauth/token/", data={
+        "client_key": CLIENT_KEY, "client_secret": CLIENT_SECRET,
+        "grant_type": "refresh_token", "refresh_token": refresh,
+    }, headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=15)
+    d = resp.json() if resp.ok else {}
+    if not d.get("access_token"):
+        return jsonify({"ok": False, "error": f"No se pudo renovar ({resp.status_code})"}), 502
+    d.setdefault("open_id", open_id)
+    _save_tokens(d)
+    return jsonify({"ok": True, "open_id": open_id, "access_token": d["access_token"]})
