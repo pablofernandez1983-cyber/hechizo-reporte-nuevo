@@ -485,10 +485,20 @@ def stock_debug():
 
 @app.route("/stock-data")
 def stock_data():
-    """Devuelve los datos de stock como JSON para el dashboard."""
+    """Devuelve los datos de stock como JSON para el dashboard.
+    Calcularlo tarda ~25 s, así que se guarda en S3 (stock_data.json): sin ?refresh=1
+    se devuelve lo guardado (lo actualiza el horario de las 19 h desde ventas-service
+    y el botón "Actualizar stock"); con ?refresh=1 se recalcula y se guarda."""
     import traceback as _tb
+    from reporte_nuevo import s3_guardar
     try:
+        if request.args.get("refresh") != "1":
+            guardado = _s3_leer("stock_data.json")
+            if guardado and guardado.get("ok"):
+                return jsonify(guardado)
         result = _stock_compute()
+        if result.get("ok") and result.get("variantes"):  # no pisar lo guardado si TN falló
+            s3_guardar("stock_data.json", result)
         return jsonify(result)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "trace": _tb.format_exc()}), 500
