@@ -171,6 +171,29 @@ def safe_float(v):
 # Detección de envío por moto / última milla.
 # Tiendanube renombró el servicio a "Envíos Nube - Entrega rápida a domicilio"
 # (operado por Epick en CABA/GBA), por eso ya no alcanza con buscar "mot".
+
+# Mayoristas: hasta 2025 entraban con cupón MAYORISTA*. Desde 2026 la tienda usa
+# una "tabla de precios" de TN (25% off, mín. $200k y 15 u.) que la API no expone:
+# el pedido llega sin cupón y con cada línea por debajo de compare_at_price.
+# Se detecta por eso; el umbral de fecha evita confundir liquidaciones viejas
+# (2022-24 tenían precios tachados en casi todo el catálogo).
+MAY_TABLA_DESDE = "2026-01-01"
+
+def es_mayorista(o):
+    coupons = o.get("coupon") or []
+    if any("mayo" in (c.get("code", "") or "").lower() for c in coupons if isinstance(c, dict)):
+        return True
+    if (o.get("created_at") or "") < MAY_TABLA_DESDE:
+        return False
+    prods = o.get("products") or []
+    unidades = rebajadas = 0
+    for p in prods:
+        q = int(safe_float(p.get("quantity", 0)))
+        unidades += q
+        if safe_float(p.get("compare_at_price")) > safe_float(p.get("price")) + 0.5:
+            rebajadas += q
+    return unidades >= 15 and safe_float(o.get("subtotal")) >= 200000 and rebajadas >= 0.9 * unidades
+
 def es_moto(medio_env):
     m = (medio_env or "").lower()
     return any(x in m for x in (
@@ -276,9 +299,7 @@ def guardar_ventas_db(orders):
         elif es_moto(medio_env):      carrier = "moto"
         elif "1978" in tracking:      carrier = "correo"
         else:                         carrier = "otro"
-        coupons = o.get("coupon") or []
-        coupon_codes = [c.get("code","") or "" for c in coupons if isinstance(c, dict)]
-        is_may = any("mayo" in c.lower() for c in coupon_codes)
+        is_may = es_mayorista(o)
         customer = o.get("customer") or {}
         rows.append((
             o.get("id"), dt.date(), dt.year, dt.month,
@@ -767,9 +788,7 @@ def fetch_tiendanube():
         tracking      = str(o.get("shipping_tracking_number","") or "").lower()
         medio_env     = str(o.get("shipping_option","") or "").lower()
 
-        coupons = o.get("coupon") or []
-        coupon_codes = [c.get("code","") or "" for c in coupons if isinstance(c, dict)]
-        is_may = any("mayo" in c.lower() for c in coupon_codes)
+        is_may = es_mayorista(o)
 
         prefix = "may" if is_may else "min"
         acum[f"ventas_{prefix}"][k] += subtotal
