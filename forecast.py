@@ -40,6 +40,13 @@ C_CONFIANZA = 2          # cuánto pesa la base frente al ritmo del período (ba
 DIAS_PERFIL = 182        # historia para el perfil por hora (día y semana)
 MESES_PERFIL = 12        # meses promediados para el perfil del mes
 BINS_MES = 200
+# Diciembre vende siempre bastante más que sep-nov (pedidos: +38/+42/+30% en 2023-25). Es lo
+# único estacional que se repite año a año; Cyber/Hot Sale no. La base se desestacionaliza
+# (se divide por el factor del día vendido) y la proyección se multiplica por el del día
+# proyectado. Backtest oct-23..sep-26 (16/10/2026): diciembre proyectado desde 1-3 meses
+# antes pasó de 26% de error (siempre corto) a 8%; mes en curso dic 12% -> 8%; el resto
+# igual. Un factor para enero (+14/+20%) empeoraba enero y feb-mar: descartado.
+ESTACION = {12: 1.30}
 
 IPC_URL = ("https://apis.datos.gob.ar/series/api/series/"
            "?ids=148.3_INIVELNAL_DICI_M_26&limit=100&format=json&start_date=2021-01-01")
@@ -145,6 +152,16 @@ def _curva(pesos):
     return c
 
 
+def _est(d):
+    return ESTACION.get(d.month, 1.0)
+
+
+def _est_periodo(ini, fin):
+    """Factor estacional promedio de los días del período [ini, fin)."""
+    dias = max(1, (fin - ini).days)
+    return sum(_est(ini + timedelta(days=i)) for i in range(dias)) / dias
+
+
 def _F(curva, frac):
     n = len(curva) - 1
     p = max(0.0, min(1.0, frac)) * n
@@ -178,10 +195,12 @@ def calcular(gran, ventas, ahora, indice=None):
     base_total = base_cant = 0.0
     for t, tot in ventas:
         if w_ini <= t < ini:
-            base_total += tot * ref / indice(t)
-            base_cant += 1
-    base_total = base_total / n_periodos * ajuste
-    base_cant = base_cant / n_periodos
+            e = _est(t)
+            base_total += tot * ref / indice(t) / e
+            base_cant += 1 / e
+    est = _est_periodo(ini, fin)
+    base_total = base_total / n_periodos * ajuste * est
+    base_cant = base_cant / n_periodos * est
 
     if gran in ("dia", "semana"):
         nb = 24 if gran == "dia" else 168
@@ -237,7 +256,7 @@ def futuros(gran, ventas, ahora, hasta, indice=None):
     (inclusive; el último se recorta en esa fecha). Ritmo diario de los últimos 3 meses en
     pesos de hoy × peso del día de la semana × inflación esperada hasta ese día.
     Backtest (meses 1..6 adelante): error 14-22%, sin sesgo; agregarle estacionalidad del
-    año pasado dio peor, incluso para noviembre/diciembre."""
+    año pasado dio peor. Lo único estacional es el factor fijo de diciembre (ESTACION)."""
     if indice is None:
         indice, _ = _indice_por_defecto()
     hoy = datetime(ahora.year, ahora.month, ahora.day)
@@ -253,8 +272,9 @@ def futuros(gran, ventas, ahora, hasta, indice=None):
         if t >= hoy:
             continue
         if t >= w_ini:
-            real_w += tot * ref / indice(t)
-            cant_w += 1
+            e = _est(t)
+            real_w += tot * ref / indice(t) / e
+            cant_w += 1 / e
         if t >= p_ini:
             por_dow[t.weekday()] += tot
     tot_dow = sum(por_dow) or 1
@@ -267,7 +287,7 @@ def futuros(gran, ventas, ahora, hasta, indice=None):
         tot = cant = 0.0
         d = ini
         while d < fin and d <= hasta:
-            f = factor_dow[d.weekday()]
+            f = factor_dow[d.weekday()] * _est(d)
             tot += diario_real * f * indice(d + timedelta(hours=12)) / ref
             cant += diario_cant * f
             d += timedelta(days=1)
