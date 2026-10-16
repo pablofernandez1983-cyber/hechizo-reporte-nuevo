@@ -42,7 +42,8 @@ MIN_STEP_SLEEP    = 0.30
 MAX_STEP_SLEEP    = 0.70
 SECTION_SLEEP_MIN = 0.80
 SECTION_SLEEP_MAX = 1.50
-MAX_TOTAL_SECONDS = 5 * 60
+MAX_TOTAL_SECONDS = 2 * 60   # espera de la descarga, por intento
+INTENTOS_EXPORT   = 3         # a veces TN no entrega el CSV; con recargar alcanza
 
 # S3
 S3_BUCKET   = os.environ.get("AWS_S3_BUCKET_NAME", "")
@@ -327,7 +328,18 @@ def run():
         cargar_session(context)
 
         page = context.new_page()
-        csv_text = export_pagonube(page)
+        for intento in range(1, INTENTOS_EXPORT + 1):
+            try:
+                csv_text = export_pagonube(page)
+                break
+            except (PWTimeout, RuntimeError) as e:
+                if "Sesión vencida" in str(e) or intento == INTENTOS_EXPORT:
+                    raise
+                print(f"[WARN] Intento {intento}/{INTENTOS_EXPORT} falló: "
+                      f"{str(e).splitlines()[0]} -> reintento con página nueva")
+                page.close()
+                time.sleep(20)
+                page = context.new_page()
 
         # Aparte: si Facturación falla, PagoNube igual se sube
         try:

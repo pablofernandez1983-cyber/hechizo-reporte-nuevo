@@ -3,6 +3,7 @@ name: PagoNube Export
 on:
   schedule:
     - cron: '0 9 * * *'
+    - cron: '0 21 * * *'   # segunda pasada por si la primera falla
   workflow_dispatch:
 
 jobs:
