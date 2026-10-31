@@ -769,6 +769,32 @@ def fetch_tiendanube():
         cursor = hasta + timedelta(days=1)
         time.sleep(1)
 
+    # La ventana va por fecha de creación: una orden vieja cancelada o devuelta después
+    # nunca se volvía a bajar. Además se traen las modificadas en los últimos 7 días.
+    if len(cache) > 0:
+        desde_mod = (hoy_date - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00-03:00")
+        viejas, page = 0, 1
+        while True:
+            try:
+                r = requests.get(f"{base}/orders", headers=headers,
+                                 params={"page": page, "per_page": 200, "updated_at_min": desde_mod},
+                                 timeout=30)
+                if r.status_code == 404 and page > 1: break   # TN da 404 al pasarse de la última página
+                r.raise_for_status()
+                batch = r.json()
+            except Exception as e:
+                log(f"  [ERROR] TN modificadas pag {page}: {e}"); break
+            if not batch: break
+            for o in batch:
+                if str(o["id"]) not in TN_IDS_REFRESCADOS:
+                    viejas += 1
+                    actualizadas += 1
+                cache[str(o["id"])] = o
+                TN_IDS_REFRESCADOS.add(str(o["id"]))
+            if len(batch) < 200: break
+            page += 1; time.sleep(0.5)
+        log(f"  TN: {viejas} ordenes anteriores a la ventana modificadas en los últimos 7 días")
+
     log(f"  TN: {actualizadas} ordenes actualizadas en total")
     if actualizadas > 0:
         if s3_guardar("tn_ordenes.json", cache):
