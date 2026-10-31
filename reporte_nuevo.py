@@ -707,6 +707,13 @@ def escribir_hoja(sheet_id, rango, valores):
 # FUENTE 1: TIENDANUBE
 # ═══════════════════════════════════════════════════════════════
 
+# Órdenes que bajó de TN la última fetch_tiendanube() (ventana de 30 días o histórico).
+# Solo esas pueden haber cambiado: el resto del caché ya está igual en Supabase.
+TN_IDS_REFRESCADOS = set()
+# True → reescribir en Supabase todas las órdenes del caché (POST /ejecutar?completo=1),
+# por ejemplo después de corregir períodos viejos con tn_bajar_periodo.py.
+DB_COMPLETO = False
+
 def fetch_tiendanube():
     log("Tiendanube: cargando cache S3...")
     if not TN_STORE_ID or not TN_TOKEN:
@@ -735,6 +742,7 @@ def fetch_tiendanube():
         log(f"  TN modo histórico: desde {cursor_inicio}")
     cursor     = cursor_inicio
     actualizadas = 0
+    TN_IDS_REFRESCADOS.clear()
     while cursor <= hoy_date:
         hasta   = min(cursor + timedelta(days=89), hoy_date)
         p_desde = cursor.strftime("%Y-%m-%dT00:00:00-03:00")
@@ -754,6 +762,7 @@ def fetch_tiendanube():
             if not batch: break
             for o in batch:
                 cache[str(o["id"])] = o
+                TN_IDS_REFRESCADOS.add(str(o["id"]))
                 actualizadas += 1
             if len(batch) < 200: break
             page += 1; time.sleep(0.5)
@@ -1560,28 +1569,33 @@ def construir_pnl(datos):
     }
     return periodos, tabla
 
-def crear_hoja_si_no_existe(sheet_id, nombre):
-    """Crea una hoja en el spreadsheet si no existe."""
-    try:
-        svc   = get_svc()
-        meta  = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
-        hojas = [s["properties"]["title"] for s in meta.get("sheets", [])]
-        if nombre not in hojas:
-            body = {"requests": [{"addSheet": {"properties": {"title": nombre}}}]}
-            svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body=body).execute()
-            log(f"  Hoja '{nombre}' creada en Sheet")
-    except Exception as e:
-        log(f"  [WARN] no se pudo crear hoja '{nombre}': {e}")
+def escribir_hojas_lote(sheet_id, hojas):
+    """Escribe varias solapas de una vez: {nombre: filas}. Crea las que falten.
+    Son 3-4 llamadas a la API en total en vez de 3 por solapa."""
+    svc   = get_svc()
+    meta  = svc.spreadsheets().get(spreadsheetId=sheet_id, fields="sheets.properties.title").execute()
+    existentes = {s["properties"]["title"] for s in meta.get("sheets", [])}
+    nuevas = [n for n in hojas if n not in existentes]
+    if nuevas:
+        svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [
+            {"addSheet": {"properties": {"title": n}}} for n in nuevas]}).execute()
+        for n in nuevas: log(f"  Hoja '{n}' creada en Sheet")
+    rangos = {n: f"'{n}'!A1:Z{len(filas)+3}" for n, filas in hojas.items()}
+    svc.spreadsheets().values().batchClear(spreadsheetId=sheet_id,
+        body={"ranges": list(rangos.values())}).execute()
+    svc.spreadsheets().values().batchUpdate(spreadsheetId=sheet_id, body={
+        "valueInputOption": "RAW",
+        "data": [{"range": rangos[n], "values": filas} for n, filas in hojas.items()]}).execute()
 
 
 def escribir_hoja1(periodos, tabla):
     log("Escribiendo hojas por año...")
+    hojas = {}
     anos = sorted(set(y for y, m in periodos))
     log("  ─── Resumen P&L ───")
     for ano in anos:
         periodos_ano = [(y, m) for y, m in periodos if y == ano]
         nombre_hoja  = str(ano)
-        crear_hoja_si_no_existe(SHEET_ID_RESUMEN, nombre_hoja)
         filas = [["Row ID"] + [f"{y},{m}" for y, m in periodos_ano]]
         for cat in ["Ingresos","Costo de Mercaderia","Gastos por Ventas",
                     "Gastos de Comercializacion","Gastos de Administracion",
@@ -1597,13 +1611,13 @@ def escribir_hoja1(periodos, tabla):
         filas.append(["Totales"] + [resultado[p] for p in periodos_ano])
         est_real = _calcular_est_real(resultado, tabla, periodos_ano)
         filas.append(["Estimacion Resultado Real"] + [est_real[p] for p in periodos_ano])
-        rango = f"'{nombre_hoja}'!A1:Z{len(filas)+3}"
-        escribir_hoja(SHEET_ID_RESUMEN, rango, filas)
+        hojas[nombre_hoja] = filas
         log(f"  Hoja {ano}: {len(filas)} filas")
 
-    escribir_hoja_detalle(periodos, tabla)
+    escribir_hoja_detalle(periodos, tabla, hojas)
+    escribir_hojas_lote(SHEET_ID_RESUMEN, hojas)
 
-def escribir_hoja_detalle(periodos, tabla):
+def escribir_hoja_detalle(periodos, tabla, hojas):
     """Escribe solapas detalladas '2026 detalle', '2025 detalle', etc.
     Muestra cada rubro individual con subtotales por categoría."""
     log("  ─── Detalle P&L ───")
@@ -1612,7 +1626,6 @@ def escribir_hoja_detalle(periodos, tabla):
     for ano in anos:
         periodos_ano = [(y, m) for y, m in periodos if y == ano]
         nombre_hoja  = f"{ano} detalle"
-        crear_hoja_si_no_existe(SHEET_ID_RESUMEN, nombre_hoja)
 
         # Header
         filas = [["Categoría", "Descripción"] + [f"{y},{m}" for y, m in periodos_ano]]
@@ -1658,8 +1671,7 @@ def escribir_hoja_detalle(periodos, tabla):
         est_real = _calcular_est_real(resultado, tabla, periodos_ano)
         filas.append(["ESTIMACION RESULTADO REAL", ""] + [est_real[p] for p in periodos_ano])
 
-        rango = f"'{nombre_hoja}'!A1:Z{len(filas)+3}"
-        escribir_hoja(SHEET_ID_RESUMEN, rango, filas)
+        hojas[nombre_hoja] = filas
         log(f"  Hoja '{nombre_hoja}': {len(filas)} filas")
 
 
@@ -1723,8 +1735,14 @@ def main():
 
         if DATABASE_URL:
             log("Guardando en Supabase...")
-            guardar_ventas_db(tn_orders)
-            guardar_ventas_detalle_db(tn_orders)
+            if DB_COMPLETO:
+                orders_db = tn_orders
+                log(f"  DB: modo completo ({len(orders_db)} órdenes)")
+            else:
+                orders_db = [o for o in tn_orders if str(o.get("id")) in TN_IDS_REFRESCADOS]
+                log(f"  DB: solo las {len(orders_db)} órdenes refrescadas de TN")
+            guardar_ventas_db(orders_db)
+            guardar_ventas_detalle_db(orders_db)
             raw = mp.get("_raw", {})
             if raw:
                 guardar_mp_db(raw["lines"], raw["header"], raw["sep"],

@@ -188,6 +188,8 @@ def _run():
 def ejecutar():
     if _estado["corriendo"]:
         return jsonify({"ok": False, "msg": "Ya está corriendo un reporte"}), 409
+    import reporte_nuevo
+    reporte_nuevo.DB_COMPLETO = request.args.get("completo") == "1"
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"ok": True, "msg": "Reporte iniciado"})
 

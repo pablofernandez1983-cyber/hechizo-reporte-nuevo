@@ -9,7 +9,8 @@ Uso:
   python tn_bajar_periodo.py 2022-01-01 2026-09-30            # solo informa (no escribe)
   python tn_bajar_periodo.py 2022-01-01 2026-09-30 --guardar  # backup + merge en S3
 
-Después correr el reporte (POST /ejecutar) para recalcular P&L, Sheet y Supabase.
+Después correr el reporte con POST /ejecutar?completo=1 (completo: si no, Supabase
+solo recibe las órdenes de los últimos 30 días) para recalcular P&L, Sheet y Supabase.
 """
 
 import sys, time, json
