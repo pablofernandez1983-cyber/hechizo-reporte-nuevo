@@ -7,10 +7,12 @@ seguimiento público del Correo de los pedidos despachados que todavía no se en
   DOMICILIO CERRADO/1 VISITA, RETORNAND0, PLAZO VENCIDO NO RECLAMO...).
 
 Avisos (cada uno una sola vez por pedido, y solo si están activados en envios_config):
-  - mail recordatorio: al 4º día en sucursal ("te quedan 3 días")
+  - mail recordatorio: cuando quedan 3 días hábiles (contando ese día)
   - mail domicilio cerrado: el cartero fue y no había nadie
-  - WhatsApp: el día anterior a la devolución, la app ofrece el botón (no se manda solo)
-El Correo devuelve a los ~7 días corridos de llegar a la sucursal (relevado ago–oct 2026).
+  - WhatsApp: desde el día hábil anterior al último, la app ofrece el botón (no se manda solo)
+El Correo guarda el paquete 5 días hábiles sin contar el de llegada (sin sábados, domingos ni
+feriados) y a la mañana del hábil siguiente lo devuelve: relevado con 4 devoluciones de oct 2026,
+todas igual (ej. llegó lun 19/10 → último día lun 26/10 → PLAZO VENCIDO mar 27/10).
 
 Andreani: su seguimiento solo se ve en la web (la arma el navegador). Esta revisión deja en S3
 `andreani_pendientes.json` y la Action andreani_seguimiento.yml (6 h, con Playwright) abre la
@@ -29,6 +31,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html import escape
 
+import holidays
 import requests
 from flask import Blueprint, jsonify, request
 
@@ -46,9 +49,8 @@ CORREO_URL = "https://www.correoargentino.com.ar/sites/all/modules/custom/ca_for
 RX_FILA = re.compile(r'Fecha:">(.*?)</td><td data-title="Planta:">(.*?)</td>'
                      r'<td data-title="Historia:">(.*?)</td><td data-title="Estado:">(.*?)</td>', re.S)
 
-DIAS_PLAZO = 7          # el Correo devuelve a los ~7 días corridos de llegar a la sucursal
-DIA_RECORDATORIO = 4    # mail "te quedan 3 días"
-DIA_WHATSAPP = 6        # el día anterior a la devolución
+HABILES_PLAZO = 5       # el Correo guarda 5 días hábiles después del de llegada
+FERIADOS = holidays.country_holidays("AR")   # incluye trasladables y puentes
 DIAS_ATRAS = 30         # pedidos de los últimos 30 días
 DIAS_SEMANA = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
@@ -88,6 +90,33 @@ def whatsapp_ar(tel):
     if not d.startswith("549"):
         d = "549" + d[2:]
     return d
+
+
+def _habil(d):
+    return d.weekday() < 5 and d not in FERIADOS
+
+
+def _mover_habiles(d, n):
+    """n días hábiles después (n > 0) o antes (n < 0) de la fecha d."""
+    paso = 1 if n > 0 else -1
+    while n:
+        d += timedelta(days=paso)
+        if _habil(d):
+            n -= paso
+    return d
+
+
+def _habiles_entre(desde, hasta):
+    """Días hábiles en (desde, hasta]."""
+    n, d = 0, desde
+    while d < hasta:
+        d += timedelta(days=1)
+        n += _habil(d)
+    return n
+
+
+def _limite_correo(llegada):
+    return _mover_habiles(llegada.astimezone(TZ_AR).date(), HABILES_PLAZO)
 
 
 def _fecha_txt(d):
@@ -203,7 +232,7 @@ def _analizar(ev):
     elif res["domicilio_cerrado_at"]:
         res["estado"] = "domicilio_cerrado"
     if res["llego_sucursal_at"]:
-        res["limite"] = (res["llego_sucursal_at"] + timedelta(days=DIAS_PLAZO - 1)).date()
+        res["limite"] = _limite_correo(res["llego_sucursal_at"])
     return res
 
 
@@ -353,7 +382,7 @@ def revisar():
             try:
                 hoy = _ahora().date()
                 if (a["estado"] == "en_sucursal" and a["limite"] and not ya.get("mail_recordatorio_at")
-                        and a["limite"] - timedelta(days=3) <= hoy <= a["limite"]):
+                        and _mover_habiles(a["limite"], -2) <= hoy <= a["limite"]):
                     _mail_recordatorio(fila)
                     _q("update envios_seguimiento set mail_recordatorio_at = now() where order_id = %(i)s", {"i": o["id"]}, fetch=False)
                     resumen["mails"] += 1
@@ -398,11 +427,14 @@ def lista():
         d = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in f.items()}
         if f["llego_sucursal_at"]:
             d["dias_en_sucursal"] = (ahora - f["llego_sucursal_at"]).days
-            limite = f["limite_retiro"] or (f["llego_sucursal_at"] + timedelta(days=DIAS_PLAZO - 1)).date()
+            limite = f["limite_retiro"] or _limite_correo(f["llego_sucursal_at"])
+            hoy = ahora.date()
             d["limite_retiro"] = limite.isoformat()
-            d["devolucion_estimada"] = (limite + timedelta(days=1)).isoformat()
-            d["dias_restantes"] = (limite - ahora.date()).days
-            d["toca_whatsapp"] = f["estado"] == "en_sucursal" and d["dias_restantes"] <= 1 and not f["whatsapp_at"]
+            d["devolucion_estimada"] = _mover_habiles(limite, 1).isoformat()
+            d["dias_restantes"] = (limite - hoy).days                 # corridos
+            d["habiles_restantes"] = _habiles_entre(hoy - timedelta(days=1), limite)   # hábiles, contando hoy
+            d["toca_whatsapp"] = (f["estado"] == "en_sucursal" and not f["whatsapp_at"]
+                                  and _mover_habiles(limite, -1) <= hoy <= limite)
         d["link"] = _link(f["carrier"], f["tracking"])
         out.append(d)
     return jsonify({"ok": True, "paquetes": out,
