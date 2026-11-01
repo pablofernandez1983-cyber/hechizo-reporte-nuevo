@@ -36,6 +36,8 @@ def _auth():
     juli = os.environ.get("JULI_KEY", "")
     k = request.headers.get("X-Juli-Key", "")
     if juli and k and hmac.compare_digest(k.encode(), juli.encode()):
+        if request.endpoint == "juli.clave_juli":   # la clave de Juli solo la ve el dueño
+            return jsonify({"ok": False, "error": "no autorizado"}), 403
         return None
     if k:
         time.sleep(0.5)
@@ -174,3 +176,9 @@ def volver_a_habitual():
         return jsonify({"ok": False, "error": "fecha inválida"}), 400
     _q("delete from juli_dias where fecha = %(f)s", {"f": f}, fetch=False)
     return jsonify({"ok": True})
+
+
+@juli_bp.route("/clave")
+def clave_juli():
+    """Para el botón de WhatsApp de la app: arma el mensaje con el link y la clave de Juli."""
+    return jsonify({"ok": True, "clave": os.environ.get("JULI_KEY", "")})
