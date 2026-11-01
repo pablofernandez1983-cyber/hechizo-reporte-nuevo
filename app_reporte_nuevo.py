@@ -45,6 +45,9 @@ app.register_blueprint(tiktok_bp)
 from juli_horarios import juli_bp
 app.register_blueprint(juli_bp)
 
+from envios_seguimiento import envios_bp
+app.register_blueprint(envios_bp)
+
 from auth_clave import chequear_clave
 
 # Rutas que usa la app del celu (index.html): exigen la misma clave que /web/*.
