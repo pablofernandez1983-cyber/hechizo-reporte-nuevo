@@ -12,7 +12,10 @@ Avisos (cada uno una sola vez por pedido, y solo si están activados en envios_c
   - WhatsApp: el día anterior a la devolución, la app ofrece el botón (no se manda solo)
 El Correo devuelve a los ~7 días corridos de llegar a la sucursal (relevado ago–oct 2026).
 
-Andreani no tiene seguimiento público sin credenciales: queda afuera.
+Andreani: su seguimiento solo se ve en la web (la arma el navegador). Esta revisión deja en S3
+`andreani_pendientes.json` y la Action andreani_seguimiento.yml (6 h, con Playwright) abre la
+página pública de cada uno y deja `andreani_estado.json`, que se usa en la revisión siguiente.
+Andreani muestra la fecha límite exacta ("Tenés tiempo hasta el 04/11/2026").
 """
 
 import base64
@@ -112,8 +115,51 @@ def _ordenes_tn():
         if len(lote) < 200:
             break
         page += 1
-    return [o for o in out
-            if str(o.get("shipping_tracking_number") or "").startswith("1978") and o.get("status") != "cancelled"]
+    return [o for o in out if o.get("status") != "cancelled" and _carrier(o)]
+
+
+def _carrier(o):
+    t = str(o.get("shipping_tracking_number") or "")
+    return "correo" if t.startswith("1978") else "andreani" if t.startswith("36000") else None
+
+
+def _link(carrier, tracking):
+    if carrier == "andreani":
+        return f"https://www.andreani.com/envio/{tracking}"
+    return f"https://www.correoargentino.com.ar/formularios/e-commerce?id={tracking}"
+
+
+RX_HASTA = re.compile(r"hasta el (\d{2})/(\d{2})/(\d{4})")
+RX_SUC_AND = re.compile(r"retirar tu envío en (?:la )?sucursal (.+?)\.?$", re.I)
+
+
+def _analizar_andreani(datos):
+    """Lo que leyó la Action en la página pública de Andreani: {cabecera, eventos: [[iso, texto]]}."""
+    ev = sorted(((datetime.fromisoformat(f), t) for f, t in datos.get("eventos", [])), key=lambda e: e[0])
+    cab = (datos.get("cabecera") or "").lower()
+    res = {"estado": "en_camino", "llego_sucursal_at": None, "domicilio_cerrado_at": None,
+           "planta_sucursal": None, "ultimo_evento": None, "ultimo_evento_at": None, "limite": None}
+    if ev:
+        res["ultimo_evento"], res["ultimo_evento_at"] = ev[-1][1].split("\n")[0][:120], ev[-1][0]
+    textos = " ".join(t for _f, t in ev).lower()
+    for dt, t in ev:
+        m = RX_SUC_AND.search(t.split("\n")[0])
+        if m and not res["llego_sucursal_at"]:
+            res["llego_sucursal_at"], res["planta_sucursal"] = dt, m.group(1).strip()
+        h = RX_HASTA.search(t)
+        if h:
+            res["limite"] = datetime(int(h.group(3)), int(h.group(2)), int(h.group(1))).date()
+        if "no logramos realizar la entrega" in t.lower():
+            res["domicilio_cerrado_at"] = dt
+    if cab.startswith("entregado") or "ya entregamos tu envío" in textos:
+        res["estado"] = "retirado"
+    elif "devol" in textos or "devuelto" in cab or "retorn" in textos:
+        res["estado"] = "devuelto"
+    elif cab.startswith("en sucursal") or res["llego_sucursal_at"]:
+        res["estado"] = "en_sucursal"
+    elif res["domicilio_cerrado_at"] and ev and ev[-1][0] == res["domicilio_cerrado_at"]:
+        res["estado"] = "domicilio_cerrado"
+    return res
 
 
 def _eventos_correo(tracking):
@@ -137,7 +183,7 @@ def _analizar(ev):
     """Estado del paquete a partir del historial del Correo."""
     estados = [e[3].upper() for e in ev]
     res = {"estado": "en_camino", "llego_sucursal_at": None, "domicilio_cerrado_at": None,
-           "planta_sucursal": None, "ultimo_evento": None, "ultimo_evento_at": None}
+           "planta_sucursal": None, "ultimo_evento": None, "ultimo_evento_at": None, "limite": None}
     if ev:
         u = ev[-1]
         res["ultimo_evento"] = (u[3] or u[2]).capitalize()
@@ -156,6 +202,8 @@ def _analizar(ev):
         res["estado"] = "en_sucursal"
     elif res["domicilio_cerrado_at"]:
         res["estado"] = "domicilio_cerrado"
+    if res["llego_sucursal_at"]:
+        res["limite"] = (res["llego_sucursal_at"] + timedelta(days=DIAS_PLAZO - 1)).date()
     return res
 
 
@@ -191,32 +239,38 @@ def _p(t):
     return f'<p style="font-size:15px;line-height:1.6;margin:0 0 14px">{t}</p>'
 
 
+def _empresa(f):
+    return "Andreani" if f["carrier"] == "andreani" else "el Correo"
+
+
+def _boton(f):
+    return _p(f'<a href="{_link(f["carrier"], f["tracking"])}" '
+              'style="display:inline-block;background:#8e3b78;color:#fff;text-decoration:none;'
+              'padding:11px 18px;border-radius:12px;font-weight:bold">Ver el seguimiento</a>')
+
+
 def _mail_recordatorio(f):
-    limite = (f["llego_sucursal_at"] + timedelta(days=DIAS_PLAZO - 1)).date()
+    limite = f["limite_retiro"]
     nombre = escape((f["cliente"] or "").split(" ")[0] or "")
-    suc = escape(f["sucursal"] or "la sucursal del Correo")
+    suc = escape(f["sucursal"] or "la sucursal")
     dire = f' ({escape(f["sucursal_dir"])})' if f.get("sucursal_dir") else ""
     cuerpo = (_p(f"¡Hola{(' ' + nombre) if nombre else ''}!")
               + _p(f"Tu pedido <b>#{f['numero']}</b> te está esperando en <b>{suc}</b>{dire}.")
               + _p(f"Tenés tiempo de retirarlo hasta el <b>{_fecha_txt(limite)}</b>. "
-                   "Después de esa fecha el Correo lo devuelve.")
+                   f"Después de esa fecha {_empresa(f)} lo devuelve.")
               + _p("Para retirarlo llevá tu DNI. Si va otra persona, que lleve una autorización firmada y una copia de tu DNI.")
-              + _p(f'<a href="https://www.correoargentino.com.ar/formularios/e-commerce?id={f["tracking"]}" '
-                   'style="display:inline-block;background:#8e3b78;color:#fff;text-decoration:none;'
-                   'padding:11px 18px;border-radius:12px;font-weight:bold">Ver el seguimiento</a>'))
+              + _boton(f))
     _mail(f["email"], f"Tu pedido de Hechizo te espera en la sucursal (hasta el {limite.day}/{limite.month})", cuerpo)
 
 
 def _mail_domicilio(f):
     nombre = escape((f["cliente"] or "").split(" ")[0] or "")
     cuerpo = (_p(f"¡Hola{(' ' + nombre) if nombre else ''}!")
-              + _p(f"El Correo pasó a entregarte tu pedido <b>#{f['numero']}</b> y no encontró a nadie en el domicilio.")
+              + _p(f"{_empresa(f).capitalize()} pasó a entregarte tu pedido <b>#{f['numero']}</b> y no encontró a nadie en el domicilio.")
               + _p("Puede volver a intentarlo o dejarlo en la sucursal más cercana. "
                    "Te recomendamos mirar el seguimiento para no perdértelo:")
-              + _p(f'<a href="https://www.correoargentino.com.ar/formularios/e-commerce?id={f["tracking"]}" '
-                   'style="display:inline-block;background:#8e3b78;color:#fff;text-decoration:none;'
-                   'padding:11px 18px;border-radius:12px;font-weight:bold">Ver el seguimiento</a>'))
-    _mail(f["email"], f"El Correo no pudo entregarte tu pedido de Hechizo #{f['numero']}", cuerpo)
+              + _boton(f))
+    _mail(f["email"], f"{_empresa(f).capitalize()} no pudo entregarte tu pedido de Hechizo #{f['numero']}", cuerpo)
 
 
 # ─────────────────────────────── revisión ───────────────────────────────
@@ -230,6 +284,9 @@ def revisar():
         mails_on = cfg.get("mails_activos") is True
         guardados = {r["order_id"]: r for r in _q("select * from envios_seguimiento")}
         ordenes = _ordenes_tn()
+        import reporte_nuevo as rn
+        and_estado = (rn.s3_leer("andreani_estado.json") or {}).get("envios", {})
+        and_pendientes = []
         resumen = {"consultados": 0, "en_sucursal": 0, "mails": 0, "errores": 0}
         for o in ordenes:
             prev = guardados.get(o["id"])
@@ -237,14 +294,21 @@ def revisar():
                 continue
             if not prev and o.get("shipping_status") in ("delivered", "unpacked", "unshipped", None):
                 continue   # ni salió o ya se entregó: no hace falta consultar
-            try:
-                ev = _eventos_correo(o["shipping_tracking_number"])
-            except Exception as e:
-                print(f"[ENVIOS] #{o['number']} error Correo: {e}")
-                resumen["errores"] += 1
-                continue
+            carrier = _carrier(o)
+            if carrier == "andreani":
+                and_pendientes.append(o["shipping_tracking_number"])
+                datos = and_estado.get(o["shipping_tracking_number"])
+                if not datos:
+                    continue   # la Action todavía no lo leyó
+                a = _analizar_andreani(datos)
+            else:
+                try:
+                    a = _analizar(_eventos_correo(o["shipping_tracking_number"]))
+                except Exception as e:
+                    print(f"[ENVIOS] #{o['number']} error Correo: {e}")
+                    resumen["errores"] += 1
+                    continue
             resumen["consultados"] += 1
-            a = _analizar(ev)
             pick = o.get("shipping_pickup_details") or {}
             ad = pick.get("address") or {}
             es_suc = o.get("shipping_pickup_type") == "pickup" or "sucursal" in str(o.get("shipping_option", "")).lower()
@@ -254,7 +318,7 @@ def revisar():
                 suc_dir += (", " if suc_dir else "") + (ad.get("locality") or ad.get("city"))
             cust = o.get("customer") or {}
             fila = {
-                "order_id": o["id"], "numero": o["number"], "carrier": "correo",
+                "order_id": o["id"], "numero": o["number"], "carrier": carrier,
                 "tracking": o["shipping_tracking_number"],
                 "cliente": o.get("contact_name") or cust.get("name"),
                 "email": o.get("contact_email") or cust.get("email"),
@@ -264,26 +328,32 @@ def revisar():
                 "sucursal_dir": suc_dir if es_suc else "",
                 "estado": a["estado"], "ultimo_evento": a["ultimo_evento"], "ultimo_evento_at": a["ultimo_evento_at"],
                 "llego_sucursal_at": a["llego_sucursal_at"], "domicilio_cerrado_at": a["domicilio_cerrado_at"],
+                "limite_retiro": a["limite"],
             }
+            if carrier == "andreani" and a["planta_sucursal"]:
+                fila["sucursal"] = a["planta_sucursal"]
             _q("""insert into envios_seguimiento (order_id, numero, carrier, tracking, cliente, email, whatsapp, tipo,
-                    sucursal, sucursal_dir, estado, ultimo_evento, ultimo_evento_at, llego_sucursal_at, domicilio_cerrado_at, actualizado_at)
+                    sucursal, sucursal_dir, estado, ultimo_evento, ultimo_evento_at, llego_sucursal_at, domicilio_cerrado_at, limite_retiro, actualizado_at)
                   values (%(order_id)s, %(numero)s, %(carrier)s, %(tracking)s, %(cliente)s, %(email)s, %(whatsapp)s, %(tipo)s,
                     %(sucursal)s, %(sucursal_dir)s, %(estado)s, %(ultimo_evento)s, %(ultimo_evento_at)s, %(llego_sucursal_at)s,
-                    %(domicilio_cerrado_at)s, now())
+                    %(domicilio_cerrado_at)s, %(limite_retiro)s, now())
                   on conflict (order_id) do update set cliente = excluded.cliente, email = excluded.email,
                     whatsapp = excluded.whatsapp, tipo = excluded.tipo, sucursal = excluded.sucursal,
                     sucursal_dir = excluded.sucursal_dir, estado = excluded.estado, ultimo_evento = excluded.ultimo_evento,
                     ultimo_evento_at = excluded.ultimo_evento_at, llego_sucursal_at = excluded.llego_sucursal_at,
-                    domicilio_cerrado_at = excluded.domicilio_cerrado_at, actualizado_at = now()""", fila, fetch=False)
+                    domicilio_cerrado_at = excluded.domicilio_cerrado_at, limite_retiro = excluded.limite_retiro,
+                    actualizado_at = now()""", fila, fetch=False)
+            if a["estado"] in ("retirado", "devuelto") and carrier == "andreani":
+                and_pendientes.remove(o["shipping_tracking_number"])
             if a["estado"] == "en_sucursal":
                 resumen["en_sucursal"] += 1
             if not (mails_on and fila["email"]):
                 continue
             ya = prev or {}
             try:
-                if (a["estado"] == "en_sucursal" and not ya.get("mail_recordatorio_at")
-                        and (_ahora() - a["llego_sucursal_at"]).days >= DIA_RECORDATORIO - 1
-                        and (_ahora() - a["llego_sucursal_at"]).days < DIAS_PLAZO):
+                hoy = _ahora().date()
+                if (a["estado"] == "en_sucursal" and a["limite"] and not ya.get("mail_recordatorio_at")
+                        and a["limite"] - timedelta(days=3) <= hoy <= a["limite"]):
                     _mail_recordatorio(fila)
                     _q("update envios_seguimiento set mail_recordatorio_at = now() where order_id = %(i)s", {"i": o["id"]}, fetch=False)
                     resumen["mails"] += 1
@@ -296,6 +366,7 @@ def revisar():
                 print(f"[ENVIOS] #{o['number']} error mail: {e}")
                 resumen["errores"] += 1
             time.sleep(0.3)
+        rn.s3_guardar("andreani_pendientes.json", {"actualizado": _ahora().isoformat(), "trackings": and_pendientes})
         _q("""insert into envios_config (clave, valor) values ('ultima_revision', %(v)s)
               on conflict (clave) do update set valor = excluded.valor""",
            {"v": json.dumps(_ahora().isoformat())}, fetch=False)
@@ -326,10 +397,13 @@ def lista():
     for f in filas:
         d = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in f.items()}
         if f["llego_sucursal_at"]:
-            dias = (ahora - f["llego_sucursal_at"]).days
-            d["dias_en_sucursal"] = dias
-            d["devolucion_estimada"] = (f["llego_sucursal_at"] + timedelta(days=DIAS_PLAZO)).date().isoformat()
-            d["toca_whatsapp"] = f["estado"] == "en_sucursal" and dias >= DIA_WHATSAPP - 1 and not f["whatsapp_at"]
+            d["dias_en_sucursal"] = (ahora - f["llego_sucursal_at"]).days
+            limite = f["limite_retiro"] or (f["llego_sucursal_at"] + timedelta(days=DIAS_PLAZO - 1)).date()
+            d["limite_retiro"] = limite.isoformat()
+            d["devolucion_estimada"] = (limite + timedelta(days=1)).isoformat()
+            d["dias_restantes"] = (limite - ahora.date()).days
+            d["toca_whatsapp"] = f["estado"] == "en_sucursal" and d["dias_restantes"] <= 1 and not f["whatsapp_at"]
+        d["link"] = _link(f["carrier"], f["tracking"])
         out.append(d)
     return jsonify({"ok": True, "paquetes": out,
                     "mails_activos": cfg.get("mails_activos") is True,
