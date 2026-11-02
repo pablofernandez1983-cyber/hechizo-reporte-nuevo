@@ -255,6 +255,10 @@ Cualquier duda, respondé este mail. ¡Gracias por tu compra! 💜<br>
     msg["Subject"] = asunto
     msg["From"] = f"Hechizo <{gmail_user}>"
     msg["To"] = to_addr
+    # Copia oculta a Hechizo para ver qué se manda y a quién (se saca con ENVIOS_MAIL_BCC="")
+    bcc = os.environ.get("ENVIOS_MAIL_BCC", gmail_user)
+    if bcc:
+        msg["Bcc"] = bcc
     msg.attach(MIMEText(html, "html", "utf-8"))
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     r = requests.post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
