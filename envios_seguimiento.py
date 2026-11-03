@@ -300,8 +300,8 @@ def _mail_domicilio(f):
     nombre = escape((f["cliente"] or "").split(" ")[0] or "")
     cuerpo = (_p(f"¡Hola{(' ' + nombre) if nombre else ''}!")
               + _p(f"{_empresa(f).capitalize()} pasó a entregarte tu pedido <b>#{f['numero']}</b> y no encontró a nadie en el domicilio.")
-              + _p("Puede volver a intentarlo o dejarlo en la sucursal más cercana. "
-                   "Te recomendamos mirar el seguimiento para no perdértelo:")
+              + _p("Te recomendamos revisar el seguimiento para saber dónde quedó tu paquete y retirarlo a tiempo, "
+                   "así evitamos que vuelva a nosotros y se generen costos adicionales.")
               + _boton(f))
     _mail(f["email"], f"{_empresa(f).capitalize()} no pudo entregarte tu pedido de Hechizo #{f['numero']}", cuerpo)
 
