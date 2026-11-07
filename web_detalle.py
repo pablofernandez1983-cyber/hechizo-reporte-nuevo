@@ -381,8 +381,15 @@ def _tn_abono_rubro(d, h):
 
 def _monotributo_rubro(d, h):
     filas = [{"fecha": _fecha_txt(x["fecha"], x["k"]), "detalle": "Monotributo", "valor": -x["importe"]}
-             for x in _s3_filas("monotributo.json", "importe") if _en(x["k"], d, h)]
-    return {"columnas": C_SHEET, "filas": filas, "notas": []}
+             for x in _monotributo_filas() if _en(x["k"], d, h)]
+    return {"columnas": C_SHEET, "filas": filas, "notas": ["Solapa «Monotributo» del Sheet de gastos."]}
+
+
+def _monotributo_filas():
+    def leer():
+        return [{"k": rn.mes_key(r["fecha"]), "fecha": r["fecha"], "importe": r["importe"]}
+                for r in rn.leer_monotributo() if rn.mes_key(r["fecha"])]
+    return _cacheado("sheet:monotributo", leer)
 
 
 @web_bp.route("/rubro")

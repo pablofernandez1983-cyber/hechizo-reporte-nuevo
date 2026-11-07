@@ -1498,6 +1498,24 @@ def _leer_tn_abono_filas(verbose=True):
             if v: filas.append({"k": k, "fecha": f, "importe": v})
     return filas
 
+def leer_monotributo():
+    """Monotributo mensual: [{"fecha", "importe"}]. Fuente: solapa «Monotributo» del Sheet de gastos
+    (la carga el bot de Telegram); si no se puede leer, cae al histórico de S3 monotributo.json."""
+    rows = leer_hoja(SHEET_ID_GASTOS, "Monotributo", "A:B", unformatted=True)
+    out = []
+    for r in rows[1:]:
+        if len(r) < 2 or r[0] in ("", None):
+            continue
+        f, v = r[0], safe_float(r[1])
+        if isinstance(f, (int, float)):        # fecha guardada como fecha real del Sheet
+            f = (date(1899, 12, 30) + timedelta(days=int(f))).isoformat()
+        if v and mes_key(str(f)):
+            out.append({"fecha": str(f), "importe": v})
+    if out:
+        return out
+    log("  [WARN] Monotributo: solapa vacía o ilegible, uso S3")
+    return s3_leer("monotributo.json") or []
+
 def fetch_manuales():
     log("Datos manuales: leyendo desde Sheet...")
     result = {}
@@ -1531,7 +1549,7 @@ def fetch_manuales():
     result["com_tn"] = {k: -v for k, v in tn_acum.items() if k[0] >= ANO_DESDE}
     log(f"  TN abono: {len(result['com_tn'])} meses (desde Sheet)")
 
-    mono_s3 = s3_leer("monotributo.json") or []
+    mono_s3 = leer_monotributo()
     mono_acum = defaultdict(float)
     for row in mono_s3:
         f = row.get("fecha",""); v = safe_float(row.get("importe",0))
