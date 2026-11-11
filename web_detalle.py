@@ -322,7 +322,7 @@ def _meta_rubro(d, h):
         WHERE {_sql_periodo()} AND COALESCE(gasto, 0) <> 0 ORDER BY fecha
     """, _params_periodo(d, h))
     for r in filas:
-        mult = rn.META_MULTIPLICADOR.get((r["anio"], r["mes"]), rn.META_MULTIPLICADOR_DEFAULT)
+        mult = rn.meta_mult((r["anio"], r["mes"]))
         r["mult"] = mult
         r["valor"] = -r["gasto"] * mult
         r["cpc"] = (r["gasto"] / r["clicks"]) if r.get("clicks") else None

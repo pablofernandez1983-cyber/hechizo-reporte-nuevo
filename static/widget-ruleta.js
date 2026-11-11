@@ -2,7 +2,7 @@
   'use strict';
 
   const COOKIE   = 'hb_ruleta_v1';
-  const ENDPOINT = 'https://hechizo-reporte-nuevo-production.up.railway.app/ruleta/participar';
+  const ENDPOINT = 'https://hechizo-stock-notificacion-production.up.railway.app/ruleta/participar';
   const LAUNCH_AT = Date.parse('2026-06-16T03:00:00Z'); // 16/06 00:00 Argentina
   const PREVIEW_PARAM = 'ruleta_preview';
   const PREVIEW_CODE = 'P9YS4XOcHL_mFgrjoKuMx7jw';

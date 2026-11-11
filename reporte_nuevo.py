@@ -60,6 +60,18 @@ GADS_MULTIPLICADOR = {
 }
 GADS_MULTIPLICADOR_DEFAULT = 1.0
 
+def _mult(tabla, k, default):
+    """Multiplicador del mes k. Un mes posterior al último cargado usa el último cargado
+    (así un año nuevo no cambia de golpe el gasto por caer en el valor por defecto)."""
+    k = tuple(k)
+    if k in tabla:
+        return tabla[k]
+    ultimo = max(tabla)
+    return tabla[ultimo] if k > ultimo else default
+
+def meta_mult(k): return _mult(META_MULTIPLICADOR, k, META_MULTIPLICADOR_DEFAULT)
+def gads_mult(k): return _mult(GADS_MULTIPLICADOR, k, GADS_MULTIPLICADOR_DEFAULT)
+
 PNL_FILAS = [
     ("ventas_min",     "Ventas",                    "Ingresos"),
     ("envio_min",      "Cobro Envio Minorista",      "Ingresos"),
@@ -201,6 +213,14 @@ def es_moto(medio_env):
         "entrega rapida", "entrega rápida", "epick", "e-pick",
     ))
 
+def carrier_de(tracking, medio_env):
+    """Transportista de un pedido: una sola regla para el P&L y para la tabla ventas."""
+    t = str(tracking or "").strip()
+    if t.startswith("36000"): return "andreani"
+    if t.startswith("1978"):  return "correo"
+    if es_moto(medio_env):    return "moto"
+    return "otro"
+
 def _col_idx(header_list, *keywords):
     h = [str(x).strip().lower() for x in header_list]
     for kw in keywords:
@@ -293,12 +313,7 @@ def guardar_ventas_db(orders):
             ).astimezone(TZ_AR)
         except: continue
         shipping_cust = safe_float(o.get("shipping_cost_customer", 0))
-        tracking  = str(o.get("shipping_tracking_number","") or "").lower()
-        medio_env = str(o.get("shipping_option","") or "").lower()
-        if "36000" in tracking:       carrier = "andreani"
-        elif es_moto(medio_env):      carrier = "moto"
-        elif "1978" in tracking:      carrier = "correo"
-        else:                         carrier = "otro"
+        carrier = carrier_de(o.get("shipping_tracking_number"), o.get("shipping_option"))
         is_may = es_mayorista(o)
         customer = o.get("customer") or {}
         rows.append((
@@ -333,11 +348,10 @@ def guardar_ventas_db(orders):
         db_exec("DELETE FROM ventas_detalle WHERE orden_id = ANY(%s)", (excluidas,))
         db_exec("DELETE FROM ventas WHERE orden_id = ANY(%s)", (excluidas,))
 
-def guardar_ventas_detalle_db(orders):
-    """Inserta el detalle de productos de cada orden en ventas_detalle."""
-    if not DATABASE_URL: return
-    log("  DB: guardando ventas_detalle...")
-    rows = []
+def filas_detalle(orders):
+    """Filas de ventas_detalle de las órdenes pagas. Si una orden trae dos líneas de la
+    misma variante se suman (la tabla tiene una fila por orden + variante)."""
+    filas, ids = {}, []
     for o in orders:
         if o.get("status") == "cancelled": continue
         if o.get("payment_status") not in ("paid", "authorized"): continue
@@ -347,38 +361,53 @@ def guardar_ventas_detalle_db(orders):
             dt = datetime.fromisoformat(
                 o.get("created_at", "").replace("Z", "+00:00")
             ).astimezone(TZ_AR)
-            fecha = dt.date()
-            anio  = dt.year
-            mes   = dt.month
-        except:
-            continue
+        except: continue
+        ids.append(int(orden_id))
         for p in (o.get("products") or []):
             variante_id = p.get("variant_id") or p.get("id")
             if not variante_id: continue
-            producto_id   = p.get("product_id")
-            producto_nombre = p.get("name", "") or ""
             variant_values  = p.get("variant_values") or []
             variante_nombre = " / ".join(
                 str(v.get("es") or v.get("en") or v.get("pt") or (list(v.values())[0] if v else ""))
                 for v in variant_values if isinstance(v, dict)
             )
-            sku      = p.get("sku", "") or ""
             cantidad = int(p.get("quantity") or 0)
-            precio   = float(p.get("price") or 0)
-            rows.append((orden_id, fecha, anio, mes, producto_id, variante_id,
-                         producto_nombre, variante_nombre, sku, cantidad, precio))
-    sql = """
-        INSERT INTO ventas_detalle
-            (orden_id, fecha, anio, mes, producto_id, variante_id,
-             producto_nombre, variante_nombre, sku, cantidad, precio_unitario)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (orden_id, variante_id) DO NOTHING
-    """
-    ok = db_exec_many(sql, rows)
-    if ok:
+            clave = (orden_id, variante_id)
+            if clave in filas:
+                filas[clave][9] += cantidad
+                continue
+            filas[clave] = [orden_id, dt.date(), dt.year, dt.month, p.get("product_id"), variante_id,
+                            p.get("name", "") or "", variante_nombre, p.get("sku", "") or "",
+                            cantidad, float(p.get("price") or 0)]
+    return [tuple(f) for f in filas.values()], ids
+
+def guardar_ventas_detalle_db(orders):
+    """Reemplaza en ventas_detalle el detalle de cada orden (borra y vuelve a insertar en una
+    sola transacción): si el pedido se editó, quedan las cantidades e ítems actuales."""
+    if not DATABASE_URL: return
+    log("  DB: guardando ventas_detalle...")
+    rows, ids = filas_detalle(orders)
+    if not ids: return
+    conn = get_db()
+    if not conn: return
+    try:
+        import psycopg2.extras
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM ventas_detalle WHERE orden_id = ANY(%s)", (ids,))
+            psycopg2.extras.execute_batch(cur, """
+                INSERT INTO ventas_detalle
+                    (orden_id, fecha, anio, mes, producto_id, variante_id,
+                     producto_nombre, variante_nombre, sku, cantidad, precio_unitario)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, rows, page_size=200)
+        conn.commit()
         log(f"  DB: {len(rows)} items ventas_detalle guardados")
-    else:
-        log(f"  [WARN] ventas_detalle: insert falló (filas preparadas: {len(rows)})")
+    except Exception as e:
+        log(f"  [WARN] ventas_detalle: {e}")
+        try: conn.rollback()
+        except: pass
+        global _db_conn
+        _db_conn = None
 
 def sync_ventas_recientes(dias=3):
     """Sincronización liviana: trae de Tiendanube solo las órdenes creadas/modificadas
@@ -713,6 +742,8 @@ TN_IDS_REFRESCADOS = set()
 # True → reescribir en Supabase todas las órdenes del caché (POST /ejecutar?completo=1),
 # por ejemplo después de corregir períodos viejos con tn_bajar_periodo.py.
 DB_COMPLETO = False
+# True → grabar aunque validar_fuentes() encuentre un rubro que quedó vacío (POST /ejecutar?forzar=1).
+FORZAR = False
 
 def fetch_tiendanube():
     log("Tiendanube: cargando cache S3...")
@@ -831,13 +862,14 @@ def fetch_tiendanube():
         acum[f"dto_{prefix}"][k]    -= discount
 
         if shipping_cust:
-            if "36000" in tracking:
+            carrier = carrier_de(tracking, medio_env)
+            if carrier == "andreani":
                 acum["envio_andreani"][k]  -= shipping_cust
-            elif "1978" in tracking and tracking:
+            elif carrier == "correo":
                 acum["envio_correo_tn"][k] -= shipping_cust
-            elif es_moto(medio_env):
+            elif carrier == "moto":
                 acum["envio_moto"][k]      -= shipping_cust
-            elif tracking:
+            elif tracking.strip():
                 # solo contar como "otro" si tiene tracking (evita envios nube sin despachar)
                 acum["envio_otro"][k]      -= shipping_cust
 
@@ -896,6 +928,8 @@ def _calcular_est_real(resultado, tabla, periodos):
 
 # ═══════════════════════════════════════════════════════════════
 
+MP_INTENTOS = 10   # x 30 s
+
 def fetch_mercadopago():
     log("MercadoPago: descargando settlement...")
     if not MP_TOKEN or not MP_USER_ID:
@@ -935,7 +969,8 @@ def fetch_mercadopago():
         """
         1. Busca en la lista de MP si ya existe un reporte processed para este rango.
         2. Si existe -> descarga directo.
-        3. Si no -> crea uno nuevo y espera hasta 40 intentos (20 min).
+        3. Si no -> crea uno nuevo y espera hasta MP_INTENTOS (5 min). Si no llega, queda
+           generado en MP y la corrida siguiente lo baja directo (paso 1).
         """
 
         try:
@@ -968,7 +1003,8 @@ def fetch_mercadopago():
                 f"{base}/v1/account/settlement_report",
                 headers=headers,
                 json={"begin_date": f"{desde_str}T00:00:00Z",
-                      "end_date":   f"{hasta_str}T23:59:59Z"}
+                      "end_date":   f"{hasta_str}T23:59:59Z"},
+                timeout=30
             )
             if r.status_code not in (200, 202):
                 log(f"  [WARN] MP create {desde_str}: {r.status_code} {r.text[:200]}")
@@ -979,7 +1015,7 @@ def fetch_mercadopago():
             log(f"  [ERROR] MP create {desde_str}: {e}")
             return None
 
-        for intento in range(1, 41):
+        for intento in range(1, MP_INTENTOS + 1):
             time.sleep(30)
             try:
                 lista = requests.get(
@@ -990,7 +1026,7 @@ def fetch_mercadopago():
                 if nuestro:
                     status    = nuestro.get("status", "")
                     file_name = nuestro.get("file_name", "")
-                    log(f"  MP intento {intento}/40: {status}")
+                    log(f"  MP intento {intento}/{MP_INTENTOS}: {status}")
                     if file_name and status == "processed":
                         content = requests.get(
                             f"{base}/v1/account/settlement_report/{file_name}",
@@ -1002,11 +1038,11 @@ def fetch_mercadopago():
                         log(f"  [ERROR] MP reporte {desde_str} falló en generación")
                         return None
                 else:
-                    log(f"  MP intento {intento}/40: esperando ID {report_id}...")
+                    log(f"  MP intento {intento}/{MP_INTENTOS}: esperando ID {report_id}...")
             except Exception as e:
                 log(f"  [WARN] MP polling {desde_str}: {e}")
 
-        log(f"  [WARN] MP bloque {desde_str} timeout tras 40 intentos - quedó en lista para próxima corrida")
+        log(f"  [WARN] MP bloque {desde_str} timeout tras {MP_INTENTOS} intentos - quedó en lista para próxima corrida")
         return None
 
     from datetime import date as _date
@@ -1256,7 +1292,7 @@ def fetch_meta():
         if spend:
             k = mes_key(reg.get("date_start",""))
             if k:
-                mult = META_MULTIPLICADOR.get(k, META_MULTIPLICADOR_DEFAULT)
+                mult = meta_mult(k)
                 gastos[k] -= spend * mult
 
     log(f"  Meta: {len(gastos)} meses")
@@ -1293,7 +1329,7 @@ def _leer_gads_filas(verbose=True):
             if not fecha or not val: continue
             k = mes_key(fecha)
             if not k: continue
-            mult = GADS_MULTIPLICADOR.get(k, GADS_MULTIPLICADOR_DEFAULT)
+            mult = gads_mult(k)
             filas.append({
                 "k": k, "fecha": fecha, "tipo": tipo,
                 "descripcion": str(row[i_d]).strip() if i_d >= 0 and len(row) > i_d else "",
@@ -1613,6 +1649,38 @@ def construir_pnl(datos):
     }
     return periodos, tabla
 
+def validar_fuentes(periodos, tabla):
+    """Frena la corrida si un rubro que venía con datos queda vacío o con menos de la mitad
+    de los meses (ej. no se pudo leer el Sheet de gastos y Compras da 0 en todos los años).
+    Compara contra lo último grabado en detalle_pnl; sin base no puede comparar y sigue."""
+    conn = get_db()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT rubro, COUNT(*) FROM detalle_pnl WHERE monto <> 0 GROUP BY rubro")
+            antes = dict(cur.fetchall())
+        conn.commit()
+    except Exception as e:
+        log(f"  [WARN] validar_fuentes: no se pudo leer detalle_pnl ({e})")
+        try: conn.rollback()
+        except: pass
+        return
+    problemas = []
+    for rid, desc, _ in PNL_FILAS:
+        previos = int(antes.get(rid, 0))
+        ahora = sum(1 for p in periodos if tabla.get(rid, {}).get(p, 0.0) != 0)
+        if previos >= 6 and ahora < previos / 2:
+            problemas.append(f"{desc} (antes {previos} meses con datos, ahora {ahora})")
+    if not problemas:
+        return
+    detalle = "; ".join(problemas)
+    if FORZAR:
+        log(f"  [WARN] Fuentes incompletas, se graba igual (forzar): {detalle}")
+        return
+    raise RuntimeError(f"Fuente incompleta, no se grabó nada: {detalle}. "
+                       "Volvé a actualizar; si el dato es correcto, usá /ejecutar?forzar=1")
+
+
 def escribir_hojas_lote(sheet_id, hojas):
     """Escribe varias solapas de una vez: {nombre: filas}. Crea las que falten.
     Son 3-4 llamadas a la API en total en vez de 3 por solapa."""
@@ -1775,6 +1843,7 @@ def main():
 
         datos           = combinar_rubros(tn, mp, meta, gads, pagonube, mp_hist, manuales)
         periodos, tabla = construir_pnl(datos)
+        validar_fuentes(periodos, tabla)
         escribir_hoja1(periodos, tabla)
 
         if DATABASE_URL:

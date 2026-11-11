@@ -54,7 +54,7 @@ from auth_clave import chequear_clave
 # /ping queda abierta (despierta el servidor); los blueprints tienen su propio chequeo.
 _ENDPOINTS_CON_CLAVE = {
     "ejecutar", "ver_estado", "ver_tokens", "ver_logs", "historico", "historico_mensual",
-    "historico_rango", "stock_debug", "stock_data", "stock", "sheet_values",
+    "historico_rango", "stock_debug", "stock_data", "sheet_values",
 }
 
 
@@ -129,6 +129,10 @@ _estado = {
 _log_buffer = deque(maxlen=200)  # últimas 200 líneas
 
 _ultimo_sync_ventas_rapido = 0
+# El servidor atiende varios pedidos a la vez (gunicorn --threads): la corrida del reporte y
+# el sync liviano de /historico comparten la conexión a la base, así que no se pisan.
+_db_lock = threading.Lock()
+_inicio_lock = threading.Lock()
 SYNC_VENTAS_THROTTLE_SEG   = 300  # no repetir el sync liviano de TN más de 1 vez cada 5 min
 
 
@@ -169,7 +173,6 @@ def _detectar_warnings():
 
 
 def _run():
-    _estado["corriendo"] = True
     _estado["ultimo_inicio"] = datetime.now(TZ_AR).isoformat()
     _estado["error"] = None
     _log_buffer.clear()
@@ -177,7 +180,8 @@ def _run():
     original_stdout = sys.stdout
     sys.stdout = _LogCapture(original_stdout)
     try:
-        ejecutar_reporte()
+        with _db_lock:   # espera si justo hay un sync liviano en curso
+            ejecutar_reporte()
         _estado["resultado"] = "OK"
     except Exception as e:
         _estado["resultado"] = "ERROR"
@@ -192,10 +196,13 @@ def _run():
 
 @app.route("/ejecutar", methods=["POST"])
 def ejecutar():
-    if _estado["corriendo"]:
-        return jsonify({"ok": False, "msg": "Ya está corriendo un reporte"}), 409
+    with _inicio_lock:   # dos toques seguidos no largan dos corridas
+        if _estado["corriendo"]:
+            return jsonify({"ok": False, "msg": "Ya está corriendo un reporte"}), 409
+        _estado["corriendo"] = True
     import reporte_nuevo
     reporte_nuevo.DB_COMPLETO = request.args.get("completo") == "1"
+    reporte_nuevo.FORZAR = request.args.get("forzar") == "1"
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"ok": True, "msg": "Reporte iniciado"})
 
@@ -310,10 +317,13 @@ def historico():
     ahora_ts = time.time()
     if not _estado["corriendo"] and (ahora_ts - _ultimo_sync_ventas_rapido) >= SYNC_VENTAS_THROTTLE_SEG:
         _ultimo_sync_ventas_rapido = ahora_ts
-        try:
-            sync_ventas_recientes(dias=3)
-        except Exception as e:
-            print(f"[WARN] sync_ventas_recientes: {e}")
+        if _db_lock.acquire(blocking=False):
+            try:
+                sync_ventas_recientes(dias=3)
+            except Exception as e:
+                print(f"[WARN] sync_ventas_recientes: {e}")
+            finally:
+                _db_lock.release()
 
     try:
         import psycopg2
@@ -512,72 +522,8 @@ def stock_data():
         return jsonify({"ok": False, "error": str(e), "trace": _tb.format_exc()}), 500
 
 
-@app.route("/stock")
-def stock():
-    import traceback as _tb
-    try:
-        return _stock_render()
-    except Exception as e:
-        return "<pre style='color:#f87171;padding:20px'>Error:\n" + _tb.format_exc() + "</pre>", 500
-
-
-def _cob_color(cob):
-    if cob is None: return ""
-    if cob < 7:  return "red"
-    if cob < 14: return "orange"
-    if cob < 21: return "yellow"
-    return "ok"
-
-
-def _cob_badge(cob):
-    if cob is None: return "&mdash;"
-    txt = str(int(round(cob))) + "d"
-    colors = {"red": "#f87171", "orange": "#fb923c", "yellow": "#fbbf24"}
-    c = _cob_color(cob)
-    if c in colors:
-        return '<span style="color:' + colors[c] + ';font-weight:600">' + txt + '</span>'
-    return txt
-
-
-def _stock_rows(items, idx_start=0):
-    bgs = {"red": "rgba(248,113,113,0.08)", "orange": "rgba(251,146,60,0.06)",
-           "yellow": "rgba(251,191,36,0.05)"}
-    out = []
-    for i, v in enumerate(items):
-        c    = _cob_color(v["cobertura"])
-        bg   = (' style="background:' + bgs[c] + '"') if c in bgs else ""
-        srch = (v["nombre"] + " " + v["variante"] + " " + v["sku"]).lower()
-        var_span = (' <span class="var">' + v["variante"] + "</span>") if v["variante"] else ""
-        sku_span = ('<span class="sku-sub">' + v["sku"] + "</span>") if v["sku"] else ""
-        row = (
-            "<tr" + bg
-            + ' data-search="' + srch + '"'
-            + ' data-cob-color="' + c + '">'
-            + '<td class="num">' + str(idx_start + i + 1) + "</td>"
-            + "<td>" + v["nombre"] + var_span + sku_span + "</td>"
-            + '<td class="num">' + str(v["stock"]) + "</td>"
-            + '<td class="num">' + str(v["unidades_90"]) + "</td>"
-            + '<td class="num">' + _cob_badge(v["cobertura"]) + "</td>"
-            + "</tr>"
-        )
-        out.append(row)
-    return "".join(out)
-
-
-_STOCK_TH = (
-    "<thead><tr>"
-    '<th class="num" style="width:36px">#</th>'
-    '<th class="sortable" onclick="sortTable(this,1)">Producto</th>'
-    '<th class="sortable num" onclick="sortTable(this,2)" style="width:72px">Stock</th>'
-    '<th class="sortable num" onclick="sortTable(this,3)" style="width:106px">'
-    '<span style="font-size:10px;line-height:1.4">Ventas<br>ult. 90d</span></th>'
-    '<th class="sortable num" onclick="sortTable(this,4)" style="width:88px">Cobertura</th>'
-    "</tr></thead>"
-)
-
-
 def _stock_compute():
-    """Calcula datos de stock y los devuelve como dict (reutilizado por JSON y HTML)."""
+    """Calcula datos de stock y los devuelve como dict."""
     errores = []
 
     # ── 1. Ventas últimos 180 días desde Supabase (3 buckets) ────────────
@@ -741,160 +687,6 @@ def _stock_compute():
         "valuacion_mes_anterior":  valuacion_mes_anterior,
         "valuacion_historia":      valuacion_historia,
     }
-
-
-def _stock_render():
-    d         = _stock_compute()
-    errores   = d["errores"]
-    variantes = d["variantes"]
-    alertas   = d["alertas"]
-    top20     = d["top20"]
-    total_v   = d["total"]
-    n_alerta  = len(alertas)
-    n_red     = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "red")
-    n_orange  = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "orange")
-    n_yellow  = sum(1 for v in alertas if _cob_color(v["cobertura"]) == "yellow")
-    gen_en    = d["generado_en"]
-    val_total = d.get("valuacion_total", 0)
-
-    # Formatear valuación estilo AR: $ 1.234.567
-    val_str = "$ " + "{:,.0f}".format(val_total).replace(",", ".")
-
-    err_html = "".join(
-        '<div class="error-msg">&#9888; ' + e + '</div>' for e in errores
-    )
-
-    val_card = (
-        '<div class="val-card">'
-        '<div class="val-label">Valuaci&#243;n del stock</div>'
-        '<div class="val-amount">' + val_str + '</div>'
-        '<div class="val-sub">precio de venta &times; stock actual</div>'
-        '</div>'
-    )
-
-    chips = (
-        '<div class="stat-chips">'
-        '<div class="chip chip-filter active" data-filter="" onclick="setChip(this)">'
-        '<span>' + str(total_v) + '</span>todas las variantes</div>'
-        '<div class="chip chip-filter" data-filter="red" onclick="setChip(this)">'
-        '<span class="red">' + str(n_red) + '</span>cobertura &lt;7d</div>'
-        '<div class="chip chip-filter" data-filter="orange" onclick="setChip(this)">'
-        '<span class="orange">' + str(n_orange) + '</span>cobertura 7-14d</div>'
-        '<div class="chip chip-filter" data-filter="yellow" onclick="setChip(this)">'
-        '<span class="yellow">' + str(n_yellow) + '</span>cobertura 14-21d</div>'
-        '</div>'
-    )
-
-    alerta_sec = ""
-    if alertas:
-        alerta_sec = (
-            '<div class="section">'
-            '<div class="section-title">&#128680; Alertas &mdash; cobertura &lt; 21 dias ('
-            + str(n_alerta) + ' variantes)</div>'
-            + '<table>' + _STOCK_TH + '<tbody>' + _stock_rows(alertas) + '</tbody></table>'
-            + '</div>'
-        )
-
-    top20_sec = (
-        '<div class="section">'
-        '<div class="section-title">&#128200; Top 20 mas vendidos &mdash; ultimos 90 dias</div>'
-        + '<table>' + _STOCK_TH + '<tbody>' + _stock_rows(top20) + '</tbody></table>'
-        + '</div>'
-    )
-
-    tabla_sec = (
-        '<div class="section">'
-        '<div class="section-title">&#128230; Todas las variantes (' + str(total_v) + ')</div>'
-        '<div class="search-wrap"><input type="text" id="srch" placeholder="Buscar nombre, variante o SKU..." oninput="aplicarFiltros()"></div>'
-        + '<table id="tc">' + _STOCK_TH + '<tbody id="tb">' + _stock_rows(variantes) + '</tbody></table>'
-        + '</div>'
-    )
-
-    css = """
-:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--muted:#8b92a5;--success:#34d399}
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;font-size:14px;padding:20px}
-h1{font-size:20px;font-weight:700;margin-bottom:4px}
-.meta{color:var(--muted);font-size:12px;margin-bottom:16px}
-a{color:var(--success);text-decoration:none}
-.section{margin-bottom:32px}
-.section-title{font-size:15px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
-.error-msg{background:rgba(248,113,113,.12);border:1px solid #f87171;color:#f87171;padding:8px 12px;border-radius:6px;margin-bottom:8px;font-size:12px}
-table{width:100%;border-collapse:collapse}
-th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
-th{color:var(--muted);font-size:12px;font-weight:500;background:var(--card);position:sticky;top:0;z-index:1}
-tr:hover{background:rgba(255,255,255,.03)}
-td.num,th.num{text-align:right}
-.var{color:var(--muted);font-size:12px}
-.sku-sub{display:block;font-size:11px;color:var(--muted);font-family:monospace;margin-top:2px}
-.sortable{cursor:pointer;user-select:none}
-.sortable:hover{color:var(--text)}
-.search-wrap{margin-bottom:12px}
-.search-wrap input{width:100%;max-width:400px;background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:14px;outline:none}
-.search-wrap input:focus{border-color:var(--success)}
-.stat-chips{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.chip{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:13px}
-.chip span{font-weight:700;font-size:16px;display:block}
-.chip .red{color:#f87171}.chip .orange{color:#fb923c}.chip .yellow{color:#fbbf24}
-.chip-filter{cursor:pointer;transition:border-color .15s}
-.chip-filter:hover{border-color:#4b5563}
-.chip-filter.active{border-color:var(--success);box-shadow:0 0 0 1px var(--success)}
-.val-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 20px;margin-bottom:20px;display:inline-block;min-width:210px}
-.val-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
-.val-amount{font-size:26px;font-weight:700;color:var(--success)}
-.val-sub{font-size:11px;color:var(--muted);margin-top:3px}
-"""
-
-    js = """
-var _chipFilter='';
-function setChip(el){
-  document.querySelectorAll('.chip-filter').forEach(function(c){c.classList.remove('active');});
-  el.classList.add('active');
-  _chipFilter=el.dataset.filter;
-  aplicarFiltros();
-}
-function aplicarFiltros(){
-  var q=(document.getElementById('srch').value||'').toLowerCase().trim();
-  document.querySelectorAll('#tb tr').forEach(function(tr){
-    var matchText=!q||tr.dataset.search.includes(q);
-    var matchChip=!_chipFilter||tr.dataset.cobColor===_chipFilter;
-    tr.style.display=(matchText&&matchChip)?'':'none';
-  });
-}
-function sortTable(th,col){
-  var tbody=document.getElementById('tb');
-  var rows=Array.from(tbody.querySelectorAll('tr'));
-  var asc=th.dataset.asc!=='1';
-  th.dataset.asc=asc?'1':'0';
-  rows.sort(function(a,b){
-    var av=a.cells[col].textContent.replace('d','').trim();
-    var bv=b.cells[col].textContent.replace('d','').trim();
-    var an=parseFloat(av),bn=parseFloat(bv);
-    if(!isNaN(an)&&!isNaN(bn))return asc?an-bn:bn-an;
-    return asc?av.localeCompare(bv):bv.localeCompare(av);
-  });
-  rows.forEach(function(r){tbody.appendChild(r);});
-}
-"""
-
-    return (
-        '<!DOCTYPE html><html lang="es"><head>'
-        '<meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>Stock - Hechizo</title>'
-        "<style>" + css + "</style>"
-        "</head><body>"
-        "<h1>Stock &mdash; Hechizo Bijou</h1>"
-        '<div class="meta">Generado ' + gen_en + ' &nbsp;&middot;&nbsp; <a href="/">&#8592; Volver al reporte</a></div>'
-        + err_html
-        + val_card
-        + chips
-        + alerta_sec
-        + top20_sec
-        + tabla_sec
-        + "<script>" + js + "</script>"
-        "</body></html>"
-    )
 
 
 @app.route("/ping")

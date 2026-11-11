@@ -11,6 +11,7 @@ Los scripts de publicación (C:\\claude\\Hechizo\\tiktok) leen el refresh_token 
 
 import os
 import secrets
+from html import escape
 import time
 from urllib.parse import urlencode
 from datetime import datetime, timezone, timedelta
@@ -112,7 +113,7 @@ def _save_tokens(d):
 def callback():
     err = request.args.get("error")
     if err:
-        return _PAGE.format(title="Hechizo Studio", body=f"<p>TikTok devolvió un error: {err}</p>"), 400
+        return _PAGE.format(title="Hechizo Studio", body=f"<p>TikTok devolvió un error: {escape(err)}</p>"), 400
     state = request.args.get("state", "")
     if _states.pop(state, None) is None:
         return _PAGE.format(title="Hechizo Studio", body="<p>Sesión vencida. Volvé a entrar a /tiktok/install.</p>"), 400
@@ -124,7 +125,7 @@ def callback():
     if not d.get("refresh_token"):
         return _PAGE.format(title="Hechizo Studio", body=f"<p>No se pudo completar la conexión ({resp.status_code}).</p>"), 502
     _save_tokens(d)
-    return _PAGE.format(title="Hechizo Studio", body=f"<h1>Listo ✨</h1><p>TikTok quedó conectado (permisos: {d.get('scope')}). Ya podés cerrar esta pestaña.</p>")
+    return _PAGE.format(title="Hechizo Studio", body=f"<h1>Listo ✨</h1><p>TikTok quedó conectado (permisos: {escape(str(d.get('scope')))}). Ya podés cerrar esta pestaña.</p>")
 
 
 # Archivo de verificación de "URL properties" (prefijo /tiktok/) de TikTok for Developers.

@@ -15,6 +15,7 @@ Endpoints:
 """
 
 import os
+import re
 import threading
 from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
@@ -66,6 +67,23 @@ notify_bp = Blueprint("notify", __name__)
 exigir_clave(notify_bp, publicas={"notify.notify", "notify.notify_webhook"})
 
 REQUIRED_FIELDS = {"email", "product_id", "variant_id", "product_name", "variant_name"}
+RX_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+
+
+def variantes_a_notificar(pendientes, prod_variants):
+    """Variantes pendientes a las que hay que avisar: las que ahora tienen stock.
+    Si la variante ya no existe en el producto (Tiendanube le cambió el ID, o el producto
+    dejó de tener variantes), se avisa si cualquier variante del producto tiene stock.
+    Una variante que existe y sigue en 0 NO se avisa aunque otra del producto tenga stock."""
+    hay_stock = max(prod_variants.values(), default=0) > 0
+    out = set()
+    for vid in pendientes:
+        if vid in prod_variants:
+            if prod_variants[vid] > 0:
+                out.add(vid)
+        elif hay_stock:
+            out.add(vid)
+    return out
 
 
 _URL_HOSTS = {h.split("://", 1)[1] for h in WIDGET_ORIGINS}
@@ -158,10 +176,15 @@ def notify():
     if missing:
         return jsonify({"error": f"campos requeridos: {', '.join(sorted(missing))}"}), 400
 
-    email        = body["email"].strip().lower()
-    product_id   = int(body["product_id"])
-    variant_id   = int(body["variant_id"])
-    store_id     = int(body.get("store_id") or 1384618)
+    email = str(body["email"]).strip().lower()
+    if not RX_EMAIL.match(email):
+        return jsonify({"error": "email inválido"}), 400
+    try:
+        product_id = int(body["product_id"])
+        variant_id = int(body["variant_id"])
+        store_id   = int(body.get("store_id") or 1384618)
+    except (TypeError, ValueError):
+        return jsonify({"error": "producto inválido"}), 400
     product_name = str(body["product_name"])[:255]
     variant_name = str(body["variant_name"])[:255]
     sku          = str(body.get("sku") or "")[:100] or None
@@ -300,34 +323,6 @@ def _enrich_with_stock_product(rows):
         r["current_stock"] = product_stock.get(r["product_id"])
 
 
-def _enrich_with_stock(rows):
-    import requests as _req
-    TN_STORE_ID = os.environ.get("TIENDANUBE_STORE_ID", "")
-    TN_TOKEN    = os.environ.get("TIENDANUBE_ACCESS_TOKEN", "")
-    if not TN_STORE_ID or not TN_TOKEN or not rows:
-        for r in rows:
-            r["current_stock"] = None
-        return
-
-    product_ids   = list({r["product_id"] for r in rows})
-    variant_stock = {}
-
-    for pid in product_ids:
-        try:
-            resp = _req.get(
-                f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products/{pid}",
-                headers=TN_HEADERS(), timeout=10,
-            )
-            if resp.ok:
-                for var in resp.json().get("variants", []):
-                    variant_stock[var["id"]] = var.get("stock")
-        except Exception:
-            pass
-
-    for r in rows:
-        r["current_stock"] = variant_stock.get(r["variant_id"])
-
-
 # ── GET /notify/stats ──────────────────────────────────────────────────────────
 
 @notify_bp.route("/notify/stats", methods=["GET"])
@@ -463,19 +458,8 @@ def check_stock():
         prod_variants = tn_product_data.get(pending_pid, {})
         if not prod_variants:
             continue
-        # Primero intentar la variante exacta
-        exact_stock = prod_variants.get(pending_vid)
-        if exact_stock is not None and exact_stock > 0:
-            stock_debug[pending_vid] = exact_stock
-            to_notify.add(pending_vid)
-        else:
-            # Si la variante exacta tiene 0 o no existe (ID obsoleto),
-            # notificar si cualquier variante del producto tiene stock > 0.
-            # Cubre productos sin variantes y casos donde TN rotó el variant_id.
-            best = max(prod_variants.values(), default=0)
-            stock_debug[pending_vid] = best
-            if best > 0:
-                to_notify.add(pending_vid)
+        stock_debug[pending_vid] = prod_variants.get(pending_vid, "variante inexistente")
+        to_notify |= variantes_a_notificar([pending_vid], prod_variants)
 
     print(f"[CHECK-STOCK] stock_debug={stock_debug} to_notify={to_notify}", flush=True)
 
@@ -505,18 +489,16 @@ def check_stock():
 
 # ── POST /notify/webhook  (Tiendanube push) ───────────────────────────────────
 
-def _registrar_firma_webhook():
-    """Por ahora solo REGISTRA si la firma HMAC de Tiendanube coincide (no bloquea).
-    Cuando los logs muestren siempre ok=<app>, pasar a rechazar las que no coinciden."""
+def _firma_webhook_valida():
+    """True si el webhook viene firmado por Tiendanube con el secreto de la app de stock
+    (header X-Linkedstore-Hmac-Sha256 = HMAC-SHA256 del cuerpo)."""
     import hashlib, hmac
+    secreto = os.environ.get("TN_APP_CLIENT_SECRET", "")
     recibida = request.headers.get("X-Linkedstore-Hmac-Sha256", "")
-    raw = request.get_data()
-    coincide = [
-        nombre for nombre, var in (("stock", "TN_APP_CLIENT_SECRET"), ("ruleta", "TN_RULETA_CLIENT_SECRET"))
-        if os.environ.get(var) and recibida and hmac.compare_digest(
-            recibida, hmac.new(os.environ[var].encode(), raw, hashlib.sha256).hexdigest())
-    ]
-    print(f"[WEBHOOK-HMAC] header={'si' if recibida else 'no'} ok={','.join(coincide) or 'ninguna'}", flush=True)
+    if not secreto or not recibida:
+        return False
+    esperada = hmac.new(secreto.encode(), request.get_data(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(recibida.encode(), esperada.encode())
 
 
 @notify_bp.route("/notify/webhook", methods=["POST"])
@@ -527,7 +509,11 @@ def notify_webhook():
     """
     import requests as _req
 
-    _registrar_firma_webhook()
+    if not _firma_webhook_valida():
+        # Se ignora sin procesar. Responde 200 para que Tiendanube no lo reintente durante
+        # días (el webhook viejo que apunta al servicio del reporte llega con otra firma).
+        print("[WEBHOOK] firma inválida: ignorado", flush=True)
+        return jsonify({"ok": True, "msg": "ignorado"}), 200
     body = request.get_json(silent=True) or {}
     event      = body.get("event", "")
     product_id = body.get("id") or body.get("product_id")
@@ -591,14 +577,7 @@ def notify_webhook():
     }
     print(f"[WEBHOOK] prod_variants={prod_variants}", flush=True)
 
-    to_notify = set()
-    for vid in variant_ids:
-        exact = prod_variants.get(vid)
-        if exact is not None and exact > 0:
-            to_notify.add(vid)
-        elif max(prod_variants.values(), default=0) > 0:
-            # Variante exacta sin stock o ID obsoleto → notificar si cualquier variante del producto tiene stock
-            to_notify.add(vid)
+    to_notify = variantes_a_notificar(variant_ids, prod_variants)
 
     print(f"[WEBHOOK] to_notify={to_notify}", flush=True)
 
@@ -730,33 +709,6 @@ def notify_delete_variant(variant_id):
 
 # ── Helpers internos ───────────────────────────────────────────────────────────
 
-def _dispatch_by_stock(variant_stock: dict) -> dict:
-    """
-    Dado {variant_id: stock_actual}, busca pendientes para las variantes
-    con stock > 0 y manda los mails.
-    """
-    with_stock = [vid for vid, s in variant_stock.items() if s > 0]
-    if not with_stock:
-        return {"enviados": 0, "msg": "Ninguna variante con stock > 0"}
-
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, email, product_name, variant_name, product_url
-                FROM stock_notifications
-                WHERE variant_id = ANY(%s) AND status = 'pending'
-            """, (with_stock,))
-            pendientes = cur.fetchall()
-    finally:
-        conn.close()
-
-    if not pendientes:
-        return {"enviados": 0, "msg": "Sin pendientes para las variantes con stock"}
-
-    return _send_and_mark(pendientes)
-
-
 def _send_and_mark(pendientes: list) -> dict:
     """Envía mails y marca como enviados. Devuelve {"enviados": N, "errores": [...]}."""
     errors   = []
@@ -790,30 +742,8 @@ def _send_and_mark(pendientes: list) -> dict:
 
 # ── Email ──────────────────────────────────────────────────────────────────────
 
-def _get_gmail_access_token():
-    import requests as _req
-    client_id     = os.environ.get("GMAIL_CLIENT_ID", "")
-    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "")
-    refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN", "")
-    if not all([client_id, client_secret, refresh_token]):
-        raise RuntimeError("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN no configurados")
-    resp = _req.post("https://oauth2.googleapis.com/token", data={
-        "client_id":     client_id,
-        "client_secret": client_secret,
-        "refresh_token": refresh_token,
-        "grant_type":    "refresh_token",
-    }, timeout=10)
-    if not resp.ok:
-        raise RuntimeError(f"Error obteniendo access token: {resp.text[:200]}")
-    return resp.json()["access_token"]
-
-
 def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
-    import requests as _req
-    import base64 as _b64
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
+    import gmail_envio
     from html import escape as _hesc
     product_name = " ".join(str(product_name or "").split())  # sin saltos de línea (va en el asunto)
     nombre_completo = product_name
@@ -867,24 +797,7 @@ def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
 </body>
 </html>"""
 
-    gmail_user = os.environ.get("GMAIL_USER", "hechizobijou@gmail.com")
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = f"Hechizo <{gmail_user}>"
-    msg["To"]      = to_addr
-    msg.attach(MIMEText(html, "html", "utf-8"))
-
-    raw = _b64.urlsafe_b64encode(msg.as_bytes()).decode()
-    access_token = _get_gmail_access_token()
-
-    resp = _req.post(
-        f"https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-        json={"raw": raw},
-        timeout=15,
-    )
-    if not resp.ok:
-        raise RuntimeError(f"Gmail API error {resp.status_code}: {resp.text[:200]}")
+    gmail_envio.enviar(to_addr, subject, html)
 
 
 # ── GET /notify/test-gmail  (diagnóstico) ─────────────────────────────────────
@@ -893,7 +806,8 @@ def _send_restock_email(to_addr, product_name, variant_name, product_url=None):
 @cross_origin(origins="*")
 def notify_test_gmail():
     try:
-        token = _get_gmail_access_token()
+        import gmail_envio
+        token = gmail_envio.access_token()
         return jsonify({"ok": True, "msg": "Gmail OAuth OK", "token_len": len(token)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

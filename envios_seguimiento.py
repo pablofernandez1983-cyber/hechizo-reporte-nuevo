@@ -20,15 +20,12 @@ página pública de cada uno y deja `andreani_estado.json`, que se usa en la rev
 Andreani muestra la fecha límite exacta ("Tenés tiempo hasta el 04/11/2026").
 """
 
-import base64
 import json
 import os
 import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from html import escape
 
 import holidays
@@ -239,8 +236,7 @@ def _analizar(ev):
 # ─────────────────────────────── mails ───────────────────────────────
 
 def _mail(to_addr, asunto, cuerpo_html):
-    from stock_notifications import _get_gmail_access_token
-    gmail_user = os.environ.get("GMAIL_USER", "hechizobijou@gmail.com")
+    import gmail_envio
     html = f"""<!DOCTYPE html><html><body style="margin:0;padding:0;background:#fbf5f8;font-family:Arial,Helvetica,sans-serif">
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#fbf5f8;padding:32px 16px"><tr><td align="center">
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:18px;padding:28px 26px;color:#2a1225">
@@ -251,21 +247,8 @@ def _mail(to_addr, asunto, cuerpo_html):
 Cualquier duda, respondé este mail. ¡Gracias por tu compra! 💜<br>
 <a href="https://hechizo.com.ar" style="color:#8e3b78">hechizo.com.ar</a></p>
 </td></tr></table></td></tr></table></body></html>"""
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = asunto
-    msg["From"] = f"Hechizo <{gmail_user}>"
-    msg["To"] = to_addr
     # Copia oculta a Hechizo para ver qué se manda y a quién (se saca con ENVIOS_MAIL_BCC="")
-    bcc = os.environ.get("ENVIOS_MAIL_BCC", gmail_user)
-    if bcc:
-        msg["Bcc"] = bcc
-    msg.attach(MIMEText(html, "html", "utf-8"))
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    r = requests.post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-                      headers={"Authorization": f"Bearer {_get_gmail_access_token()}"},
-                      json={"raw": raw}, timeout=20)
-    if not r.ok:
-        raise RuntimeError(f"Gmail {r.status_code}: {r.text[:200]}")
+    gmail_envio.enviar(to_addr, asunto, html, bcc=os.environ.get("ENVIOS_MAIL_BCC", gmail_envio.usuario()) or None)
 
 
 def _p(t):

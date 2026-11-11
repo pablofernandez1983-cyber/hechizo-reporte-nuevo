@@ -13,7 +13,6 @@ Flujo:
 import os
 import secrets
 import threading
-from datetime import datetime, timezone
 import requests as http
 from flask import Blueprint, jsonify, make_response, redirect, request
 
@@ -37,16 +36,13 @@ MAIL_PREMIOS = {
 }
 
 RULETA_PREMIOS = tuple(MAIL_PREMIOS)
-PRODUCTION_STORE_ID = 1384618
-RULETA_LAUNCH_AT = datetime(2026, 6, 16, 3, 0, tzinfo=timezone.utc)
-RULETA_PREVIEW_CODE = "P9YS4XOcHL_mFgrjoKuMx7jw"
 
 ruleta_bp = Blueprint("tiendanube_ruleta", __name__)
 
-# Abiertas: el widget de la tienda (participar/suscribir) y el flujo OAuth (install/callback).
+# Abiertas: el widget de la tienda (participar) y el flujo OAuth (install/callback).
 # El resto (setup-script, remove-script, list-scripts, test-token) exige la clave de /web/*.
 exigir_clave(ruleta_bp, publicas={
-    "tiendanube_ruleta.participar", "tiendanube_ruleta.suscribir",
+    "tiendanube_ruleta.participar",
     "tiendanube_ruleta.install", "tiendanube_ruleta.callback",
 })
 
@@ -65,30 +61,9 @@ def _get_token(store_id):
     return row[0] if row else None
 
 
-def _get_gmail_access_token():
-    import requests as _req
-    client_id     = os.environ.get("GMAIL_CLIENT_ID", "")
-    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "")
-    refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN", "")
-    if not all([client_id, client_secret, refresh_token]):
-        raise RuntimeError("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN no configurados")
-    resp = _req.post("https://oauth2.googleapis.com/token", data={
-        "client_id":     client_id,
-        "client_secret": client_secret,
-        "refresh_token": refresh_token,
-        "grant_type":    "refresh_token",
-    }, timeout=10)
-    if not resp.ok:
-        raise RuntimeError(f"Error obteniendo access token: {resp.text[:200]}")
-    return resp.json()["access_token"]
-
-
 def _enviar_mail_cupon(email, premio):
     """Envía email con el cupón ganado. Diseñado para correr en un thread."""
-    import requests as _req
-    import base64 as _b64
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
+    import gmail_envio
 
     # Solo premios conocidos: nunca meter en el mail texto que vino del navegador.
     if premio not in MAIL_PREMIOS:
@@ -191,27 +166,9 @@ def _enviar_mail_cupon(email, premio):
 </body>
 </html>"""
 
-    gmail_user = os.environ.get("GMAIL_USER", "hechizobijou@gmail.com")
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = f"Hechizo <{gmail_user}>"
-    msg["To"]      = email
-    msg["Bcc"]     = "pablofernandez1983@gmail.com"
-    msg.attach(MIMEText(html, "html", "utf-8"))
-
-    raw = _b64.urlsafe_b64encode(msg.as_bytes()).decode()
     try:
-        access_token = _get_gmail_access_token()
-        resp = _req.post(
-            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            json={"raw": raw},
-            timeout=15,
-        )
-        if resp.ok:
-            print(f"[ruleta] Mail enviado a {email} ({premio})", flush=True)
-        else:
-            print(f"[ruleta] Gmail API error {resp.status_code}: {resp.text[:200]}", flush=True)
+        gmail_envio.enviar(email, subject, html, bcc="pablofernandez1983@gmail.com")
+        print(f"[ruleta] Mail enviado a {email} ({premio})", flush=True)
     except Exception as exc:
         print(f"[ruleta] Error enviando mail a {email}: {exc}", flush=True)
 
@@ -357,17 +314,6 @@ def _cors_response(payload=None):
     return r
 
 
-def _production_launch_pending(store_id, preview_code=None):
-    try:
-        return (
-            int(store_id) == PRODUCTION_STORE_ID
-            and datetime.now(timezone.utc) < RULETA_LAUNCH_AT
-            and not secrets.compare_digest(str(preview_code or ""), RULETA_PREVIEW_CODE)
-        )
-    except (TypeError, ValueError):
-        return False
-
-
 @ruleta_bp.route("/ruleta/participar", methods=["POST", "OPTIONS"])
 def participar():
     """Reserva el email y decide el premio antes de permitir el giro."""
@@ -377,13 +323,9 @@ def participar():
     data     = request.get_json(silent=True) or {}
     email    = (data.get("email") or "").strip()
     store_id = data.get("store_id")
-    preview_code = data.get("preview_code")
 
     if not email or "@" not in email:
         return _cors_response({"error": "email inválido"}), 400
-
-    if _production_launch_pending(store_id, preview_code):
-        return _cors_response({"error": "La ruleta estará disponible próximamente"}), 503
 
     try:
         premio = secrets.choice(RULETA_PREMIOS)
@@ -394,42 +336,6 @@ def participar():
             }), 409
         threading.Thread(target=_enviar_mail_cupon, args=(email, premio), daemon=True).start()
         return _cors_response({"ok": True, "premio": premio}), 200
-    except Exception as e:
-        return _cors_response({"error": str(e)[:200]}), 500
-
-
-@ruleta_bp.route("/ruleta/suscribir", methods=["POST", "OPTIONS"])
-def suscribir():
-    """Compatibilidad con versiones anteriores del widget."""
-    r = _cors_response()
-
-    if request.method == "OPTIONS":
-        return r, 204
-
-    data     = request.get_json(silent=True) or {}
-    email    = (data.get("email") or "").strip()
-    store_id = data.get("store_id")
-    premio   = data.get("premio") or "nada"
-
-    if not email or "@" not in email:
-        r.set_data(jsonify({"error": "email inválido"}).get_data())
-        r.content_type = "application/json"
-        return r, 400
-
-    if premio != "nada" and premio not in MAIL_PREMIOS:
-        return _cors_response({"error": "premio inválido"}), 400
-
-    if _production_launch_pending(store_id):
-        return _cors_response({"error": "La ruleta estará disponible próximamente"}), 503
-
-    try:
-        if not _reserve_email(email, store_id, premio):
-            return _cors_response({
-                "error": "Este email ya participó",
-                "already_participated": True,
-            }), 409
-        threading.Thread(target=_enviar_mail_cupon, args=(email, premio), daemon=True).start()
-        return _cors_response({"ok": True}), 200
     except Exception as e:
         return _cors_response({"error": str(e)[:200]}), 500
 

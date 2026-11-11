@@ -6,6 +6,7 @@ Expone solo los endpoints necesarios para el script de Tiendanube y OAuth:
   - /notify/webhook
   - /notify/*
   - /tiendanube/*
+  - /ruleta/participar (la ruleta de la tienda: acá responde al instante)
 """
 
 import os
@@ -14,6 +15,7 @@ from flask_cors import CORS
 
 from stock_notifications import notify_bp
 from tiendanube_app import tn_bp
+from tiendanube_ruleta import ruleta_bp
 
 
 app = Flask(__name__)
@@ -21,6 +23,7 @@ CORS(app)
 
 app.register_blueprint(notify_bp)
 app.register_blueprint(tn_bp)
+app.register_blueprint(ruleta_bp)   # /ruleta/participar: este servicio no se duerme
 
 
 @app.route("/widget-stock.js")
