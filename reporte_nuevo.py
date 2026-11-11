@@ -1537,6 +1537,29 @@ def _leer_tn_abono_filas(verbose=True):
             if v: filas.append({"k": k, "fecha": f, "importe": v})
     return filas
 
+SOLAPA_TN_TRANSACCION = "Tiendanube_transaccion"   # Fecha | Importe | Tipo | Origen
+
+def _leer_tn_transaccion_filas(verbose=True):
+    """Costo por transacción de Tiendanube (1% de lo cobrado fuera de Pago Nube):
+    [{"k", "fecha", "importe", "tipo", "origen"}] (importe positivo), una fila por mes de
+    factura y tipo. La llena recurrentes.sync_tn_transaccion() con las facturas de TN; la
+    historia anterior a ago-2026 se reconstruyó con tn_transaccion_historico.py."""
+    rows = leer_hoja(SHEET_ID_GASTOS, SOLAPA_TN_TRANSACCION, "A:D", unformatted=True)
+    filas = []
+    for r in rows[1:]:
+        if len(r) < 2 or r[0] in ("", None):
+            continue
+        f = r[0]
+        if isinstance(f, (int, float)):        # fecha guardada como fecha real del Sheet
+            f = (date(1899, 12, 30) + timedelta(days=int(f))).isoformat()
+        k, v = mes_key(str(f)), safe_float(r[1])
+        if k and v:
+            filas.append({"k": k, "fecha": str(f), "importe": v,
+                          "tipo": str(r[2]).strip() if len(r) > 2 else "",
+                          "origen": str(r[3]).strip() if len(r) > 3 else ""})
+    if verbose: log(f"  TN costo por transacción: {len(filas)} filas")
+    return filas
+
 def leer_monotributo():
     """Monotributo mensual: [{"fecha", "importe"}]. Fuente: solapa «Monotributo» del Sheet de gastos
     (la carga el bot de Telegram); si no se puede leer, cae al histórico de S3 monotributo.json."""
@@ -1565,6 +1588,11 @@ def fetch_manuales():
         sync_tn_abono()
     except Exception as e:
         log(f"  [WARN] TN abono auto: {e}")
+    try:
+        from recurrentes import sync_tn_transaccion
+        sync_tn_transaccion()
+    except Exception as e:
+        log(f"  [WARN] TN costo por transacción auto: {e}")
 
     result["ventas_manual"] = _leer_solapa(["Ventas","ventas"], 2, True, "Ventas manuales")
     result["compras"] = _leer_solapa(
@@ -1584,6 +1612,10 @@ def fetch_manuales():
     tn_filas = _leer_tn_abono_filas()
     tn_acum = defaultdict(float)
     for x in tn_filas:
+        tn_acum[x["k"]] += x["importe"]
+    # + costo por transacción (lo que TN descuenta de MercadoPago y lo que factura por
+    # transferencias/efectivo): no está en com_mp ni en ningún otro rubro
+    for x in _leer_tn_transaccion_filas():
         tn_acum[x["k"]] += x["importe"]
     result["com_tn"] = {k: -v for k, v in tn_acum.items() if k[0] >= ANO_DESDE}
     log(f"  TN abono: {len(result['com_tn'])} meses (desde Sheet)")

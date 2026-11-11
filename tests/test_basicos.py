@@ -163,3 +163,29 @@ class FirmaWebhook(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CostoPorTransaccion(unittest.TestCase):
+    def test_desde_facturas(self):
+        import recurrentes as rec
+        facturas = [
+            {"mes": "2026-11", "numero": "A-1", "concepto": "Costos por transacción", "importe": 35638.23},
+            {"mes": "2026-11", "numero": "A-2", "concepto": "Costos por transacción cobrados automáticamente", "importe": 58167.48},
+            {"mes": "2026-11", "numero": "A-3", "concepto": "Costo de envío", "importe": 1655730.15},
+            {"mes": "2026-10", "numero": "A-4", "concepto": "Plan - Impulso", "importe": 79999.0},
+            {"mes": "2026-10", "numero": "A-5", "concepto": "Costos por transacción", "importe": 40336.33},
+        ]
+        r = rec.transaccion_desde_facturas(facturas)
+        self.assertEqual(r[((2026, 11), rec.TIPO_OTROS)], (35638.23, ["A-1"]))
+        self.assertEqual(r[((2026, 11), rec.TIPO_MP)], (58167.48, ["A-2"]))
+        self.assertEqual(r[((2026, 10), rec.TIPO_OTROS)], (40336.33, ["A-5"]))
+        self.assertEqual(len(r), 3)      # ni el plan ni el costo de envío
+
+    def test_el_abono_no_incluye_el_costo_por_transaccion(self):
+        import recurrentes as rec
+        facturas = [
+            {"mes": "2026-10", "concepto": "Plan - Impulso", "importe": 79999.0},
+            {"mes": "2026-10", "concepto": "Nuvem Chat: cargos por cantidad de 261 conversaciones", "importe": 67860.0},
+            {"mes": "2026-10", "concepto": "Costos por transacción", "importe": 40336.33},
+        ]
+        self.assertEqual(rec.abono_desde_facturas(facturas), {(2026, 10): 147859.0})

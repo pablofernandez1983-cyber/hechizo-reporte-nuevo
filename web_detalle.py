@@ -376,7 +376,17 @@ def _tn_abono_rubro(d, h):
     todas = _cacheado("sheet:tn_abono", lambda: rn._leer_tn_abono_filas(verbose=False))
     filas = [{"fecha": _fecha_txt(x["fecha"], x["k"]), "detalle": "Abono Tiendanube", "valor": -x["importe"]}
              for x in todas if _en(x["k"], d, h) and x["k"][0] >= rn.ANO_DESDE]
-    return {"columnas": C_SHEET, "filas": filas, "notas": ["Solapa «Tiendanube_abono» del Sheet de gastos."]}
+    trans = _cacheado("sheet:tn_transaccion", lambda: rn._leer_tn_transaccion_filas(verbose=False))
+    filas += [{"fecha": _fecha_txt(x["fecha"], x["k"]),
+               "detalle": f"Costo por transacción · {x['tipo']} ({x['origen']})", "valor": -x["importe"]}
+              for x in trans if _en(x["k"], d, h) and x["k"][0] >= rn.ANO_DESDE]
+    filas.sort(key=lambda r: str(r["fecha"]))
+    return {"columnas": C_SHEET, "filas": filas, "notas": [
+        "Solapa «Tiendanube_abono» (plan + Nuvem Chat) y solapa «Tiendanube_transaccion» del Sheet de gastos.",
+        "Costo por transacción = 1% de lo cobrado por MercadoPago (Tiendanube lo descuenta del cobro) y por "
+        "transferencia/efectivo (lo factura). Va en el mes de la factura, que cobra las ventas del mes anterior.",
+        "Hasta jul-2026 está reconstruido: MercadoPago con las liquidaciones reales; transferencias, estimado "
+        "con el mismo porcentaje del mes."]}
 
 
 def _monotributo_rubro(d, h):

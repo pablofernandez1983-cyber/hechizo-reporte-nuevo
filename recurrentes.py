@@ -12,7 +12,7 @@ Si ese mes ya tiene la fila (cargada a mano o desde la app), no pregunta nada.
 """
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 from flask import Blueprint, jsonify, request
 
@@ -156,6 +156,73 @@ def sync_tn_abono(verbose=True):
             continue
         accion = _escribir_tn(k, v, f"auto Facturación TN {datos.get('leido', '')[:10]}")
         rn.log(f"  TN abono auto: {k[0]}-{k[1]:02d} = {v:,.2f} ({accion})")
+
+
+# ─────────────────────────────── costo por transacción TN ───────────────────────────────
+
+TIPO_MP = "MercadoPago (automático)"
+TIPO_OTROS = "Transferencia y otros"
+
+
+def transaccion_desde_facturas(facturas):
+    """{(mes_key, tipo): (importe, números de factura)} de los renglones "Costos por transacción".
+    El mes es el de la factura (la de noviembre cobra las ventas de octubre)."""
+    out = {}
+    for f in facturas:
+        concepto = f.get("concepto", "").lower()
+        if not concepto.startswith("costos por transacci"):
+            continue
+        tipo = TIPO_MP if "autom" in concepto else TIPO_OTROS
+        a, m = map(int, f["mes"].split("-"))
+        imp, nums = out.get(((a, m), tipo), (0.0, []))
+        out[((a, m), tipo)] = (round(imp + float(f["importe"]), 2), nums + [f.get("numero", "")])
+    return out
+
+
+def sync_tn_transaccion(verbose=True):
+    """Graba en la solapa Tiendanube_transaccion el costo por transacción de cada factura
+    que esté en tn_facturas.json (son solo los últimos meses: por eso se guarda en el Sheet).
+    Agrega la fila que falte y corrige la que tenga otro importe; no toca meses que ya no
+    están en el archivo."""
+    datos = rn.s3_leer("tn_facturas.json")
+    if not datos or not datos.get("facturas"):
+        if verbose: rn.log("  TN costo por transacción: sin tn_facturas.json en S3")
+        return
+    nuevas = transaccion_desde_facturas(datos["facturas"])
+    if not nuevas:
+        return
+    svc = rn.get_svc().spreadsheets()
+    rango = f"'{rn.SOLAPA_TN_TRANSACCION}'!A:D"
+    res = svc.values().get(spreadsheetId=rn.SHEET_ID_GASTOS, range=rango,
+                           valueRenderOption="UNFORMATTED_VALUE").execute()   # si falla, no se escribe nada
+    filas = res.get("values", [])
+    en_sheet = {}
+    for i, row in enumerate(filas[1:], start=2):
+        if len(row) < 3 or row[0] in ("", None):
+            continue
+        f = row[0]
+        if isinstance(f, (int, float)):
+            f = (date(1899, 12, 30) + timedelta(days=int(f))).isoformat()
+        k = rn.mes_key(str(f))
+        if k:
+            en_sheet[(k, str(row[2]).strip())] = (i, rn.safe_float(row[1]))
+    for (k, tipo), (importe, nums) in sorted(nuevas.items()):
+        origen = "factura " + ", ".join(n for n in nums if n)
+        previo = en_sheet.get((k, tipo))
+        if previo and abs(previo[1] - importe) < 0.01:
+            continue
+        if previo:
+            svc.values().update(
+                spreadsheetId=rn.SHEET_ID_GASTOS, range=f"'{rn.SOLAPA_TN_TRANSACCION}'!B{previo[0]}:D{previo[0]}",
+                valueInputOption="RAW", body={"values": [[importe, tipo, origen]]}).execute()
+            accion = "corregida"
+        else:
+            svc.values().append(
+                spreadsheetId=rn.SHEET_ID_GASTOS, range=rango, valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",
+                body={"values": [[f"{k[0]}-{k[1]:02d}-01", importe, tipo, origen]]}).execute()
+            accion = "agregada"
+        rn.log(f"  TN costo por transacción: {k[0]}-{k[1]:02d} {tipo} = {importe:,.2f} ({accion})")
 
 
 # ─────────────────────────────── tarjetas de la app ───────────────────────────────
