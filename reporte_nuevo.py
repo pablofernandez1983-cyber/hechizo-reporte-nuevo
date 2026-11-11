@@ -2,7 +2,7 @@
 reporte_nuevo.py — Hechizo Bijou P&L mensual
 """
 
-import os, json, re, time, traceback, requests
+import os, json, re, time, threading, traceback, requests
 from datetime import datetime, date, timedelta, timezone
 from collections import defaultdict
 from google.oauth2 import service_account
@@ -703,17 +703,20 @@ def s3_borrar(key):
 # GOOGLE SHEETS
 # ═══════════════════════════════════════════════════════════════
 
-_svc = None
+# El cliente de Google (httplib2) no se puede compartir entre hilos: con el servidor
+# atendiendo varios pedidos a la vez, dos lecturas simultáneas del Sheet se pisaban y
+# fallaban. Cada hilo tiene el suyo.
+_svc_local = threading.local()
 
 def get_svc():
-    global _svc
-    if _svc is None:
+    svc = getattr(_svc_local, "svc", None)
+    if svc is None:
         creds = service_account.Credentials.from_service_account_info(
             json.loads(SA_JSON),
             scopes=["https://www.googleapis.com/auth/spreadsheets"]
         )
-        _svc = build("sheets", "v4", credentials=creds, cache_discovery=False)
-    return _svc
+        svc = _svc_local.svc = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    return svc
 
 def leer_hoja(sheet_id, hoja, rango="A:Z", unformatted=False):
     try:

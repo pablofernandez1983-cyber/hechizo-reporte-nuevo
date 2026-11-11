@@ -63,12 +63,19 @@ def _filas_concepto(cid):
     """[(mes_key, importe, detalle)] de las filas de la solapa que son de ese concepto."""
     c = CONCEPTOS[cid]
     filas, _ = rn._leer_solapa_filas([c["solapa"]], 3, False, c["label"], verbose=False)
+    if not filas:
+        # La solapa tiene años de historia: vacía = no se pudo leer. Sin esto la app
+        # volvía a preguntar un gasto que ya estaba cargado.
+        raise RuntimeError(f"No se pudo leer la solapa {c['solapa']}")
     return [(x["k"], -x["valor"], x["detalle"]) for x in filas
             if re.search(c["patron"], x["detalle"], re.I)]
 
 
-def _filas_tn():
-    return [(x["k"], x["importe"]) for x in rn._leer_tn_abono_filas(verbose=False)]
+def _filas_tn(estricto=False):
+    filas = [(x["k"], x["importe"]) for x in rn._leer_tn_abono_filas(verbose=False)]
+    if estricto and not filas:
+        raise RuntimeError(f"No se pudo leer la solapa {SOLAPA_TN}")
+    return filas
 
 
 def _agregar_fila_gasto(cid, importe, dia):
@@ -181,7 +188,7 @@ def pendientes():
         out.append({"id": cid, "label": c["label"], "sugerido": sugerido, "referencia": ref})
 
     if "tn_abono" not in omit and hoy.day >= DIA_TARJETA_TN:
-        filas = _filas_tn()
+        filas = _filas_tn(estricto=True)
         if not any(fk == k for fk, _ in filas):
             ult = max((f for f in filas if f[0] < k), key=lambda f: f[0], default=None)
             out.append({"id": "tn_abono", "label": "Abono Tiendanube",
@@ -227,7 +234,7 @@ def confirmar_recurrente():
 
     try:
         if cid == "tn_abono":
-            if any(fk == k for fk, _ in _filas_tn()):
+            if any(fk == k for fk, _ in _filas_tn(estricto=True)):
                 return jsonify({"ok": True, "accion": "ya estaba"})
             _escribir_tn(k, importe, "cargado desde la app")
         else:

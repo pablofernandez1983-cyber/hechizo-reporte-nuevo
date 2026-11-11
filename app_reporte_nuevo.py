@@ -84,7 +84,10 @@ def sheet_values():
     try:
         res = get_svc().spreadsheets().values().get(**kwargs).execute()
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)[:300]}), 502
+        # 404 = la solapa no existe (ej. el año nuevo antes de la primera corrida);
+        # 502 = no se pudo leer. La app los trata distinto.
+        no_existe = "Unable to parse range" in str(e)
+        return jsonify({"ok": False, "error": str(e)[:300]}), 404 if no_existe else 502
     return jsonify({"ok": True, "range": res.get("range"), "values": res.get("values", [])})
 
 
