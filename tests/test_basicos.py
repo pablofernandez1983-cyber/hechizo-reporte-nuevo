@@ -81,6 +81,9 @@ class Carrier(unittest.TestCase):
         self.assertEqual(rn.carrier_de("360002123456789", "Andreani a domicilio"), "andreani")
         self.assertEqual(rn.carrier_de("19781234567", "Correo Argentino"), "correo")
         self.assertEqual(rn.carrier_de("", "Envíos Nube - Entrega rápida a domicilio"), "moto")
+        self.assertEqual(rn.carrier_de("GAOC12345", "envio nube - entrega a domicilio"), "moto")
+        self.assertEqual(rn.carrier_de("", "envío nube - correo argentino clásico a domicilio"), "otro")
+        self.assertEqual(rn.carrier_de("", "envío nube - andreani a domicilio"), "otro")
         self.assertEqual(rn.carrier_de(None, "Retiro en showroom"), "otro")
         # con seguimiento del Correo manda el seguimiento, no el nombre del envío
         self.assertEqual(rn.carrier_de("19781234567", "Moto"), "correo")
