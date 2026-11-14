@@ -677,3 +677,47 @@ def productos_cambio():
         return jsonify({"ok": True, "dias": n, "filas": filas})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════
+# CATEGORÍAS de producto (Bijou / Home / Ropa / Otros + subcategorías, por nombre)
+# ═══════════════════════════════════════════════════════════════
+
+@web_bp.route("/categorias")
+def categorias():
+    """Sin parámetros: facturación y unidades por mes, grupo y subcategoría (toda la historia).
+    Con ?sub=X&desde&hasta: los productos de esa subcategoría en el período."""
+    from categorias_producto import clasificar
+    try:
+        sub = request.args.get("sub")
+        if sub:
+            desde, hasta = _rango_fechas()
+            filas = _q(f"""
+                SELECT d.producto_id::text AS producto_id, MAX(d.producto_nombre) AS producto,
+                       SUM(d.cantidad) AS unidades, SUM(d.cantidad * d.precio_unitario) AS facturado,
+                       COUNT(DISTINCT d.orden_id) AS ordenes, MAX(v.fecha) AS ultima_venta
+                FROM ventas_detalle d JOIN ventas v ON v.orden_id = d.orden_id
+                WHERE v.{PAGADAS} AND v.fecha BETWEEN %(desde)s AND %(hasta)s
+                GROUP BY d.producto_id ORDER BY facturado DESC
+            """, {"desde": desde, "hasta": hasta})
+            filas = [f for f in filas if clasificar(f["producto"])[1] == sub]
+            return jsonify({"ok": True, "filas": filas})
+
+        def calcular():
+            agg = {}
+            for r in _q(f"""
+                SELECT TO_CHAR(v.fecha, 'YYYY-MM') AS mes, d.producto_nombre AS nombre,
+                       SUM(d.cantidad) AS unidades, SUM(d.cantidad * d.precio_unitario) AS facturado
+                FROM ventas_detalle d JOIN ventas v ON v.orden_id = d.orden_id
+                WHERE v.{PAGADAS}
+                GROUP BY 1, 2
+            """):
+                g, s = clasificar(r["nombre"])
+                a = agg.setdefault((r["mes"], g, s), [0, 0.0])
+                a[0] += r["unidades"] or 0
+                a[1] += r["facturado"] or 0
+            return [{"mes": m, "grupo": g, "sub": s, "unidades": u, "facturado": f}
+                    for (m, g, s), (u, f) in sorted(agg.items())]
+        return jsonify({"ok": True, "filas": _cacheado("categorias", calcular)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
