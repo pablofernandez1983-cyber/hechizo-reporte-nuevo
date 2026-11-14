@@ -683,23 +683,39 @@ def productos_cambio():
 # CATEGORÍAS de producto (Bijou / Home / Ropa / Otros + subcategorías, por nombre)
 # ═══════════════════════════════════════════════════════════════
 
+EDAD_SQL = """CASE
+    WHEN v.nacimiento_est IS NULL THEN 's/d'
+    WHEN v.anio + (v.mes - 0.5) / 12 - v.nacimiento_est < 25 THEN '<25'
+    WHEN v.anio + (v.mes - 0.5) / 12 - v.nacimiento_est < 35 THEN '25-34'
+    WHEN v.anio + (v.mes - 0.5) / 12 - v.nacimiento_est < 45 THEN '35-44'
+    WHEN v.anio + (v.mes - 0.5) / 12 - v.nacimiento_est < 55 THEN '45-54'
+    ELSE '55+' END"""
+
+
 @web_bp.route("/categorias")
 def categorias():
-    """Sin parámetros: facturación y unidades por mes, grupo y subcategoría (toda la historia).
-    Con ?sub=X&desde&hasta: los productos de esa subcategoría en el período."""
+    """Sin ?sub: facturación y unidades por mes × grupo × subcategoría × tipo de clienta × tramo de edad
+    (edad al comprar, estimada por DNI). `p` = 1 si la venta fue hasta el día del mes de hoy, para
+    comparar un mes en curso contra el mismo tramo del año anterior.
+    Con ?sub=X&desde&hasta[&tipo][&edad]: los productos de esa subcategoría."""
     from categorias_producto import clasificar
     try:
         sub = request.args.get("sub")
         if sub:
             desde, hasta = _rango_fechas()
+            cond, p = "", {"desde": desde, "hasta": hasta}
+            if request.args.get("tipo") in ("minorista", "mayorista"):
+                cond += " AND v.tipo = %(tipo)s"; p["tipo"] = request.args["tipo"]
+            if request.args.get("edad"):
+                cond += f" AND ({EDAD_SQL}) = %(edad)s"; p["edad"] = request.args["edad"]
             filas = _q(f"""
                 SELECT d.producto_id::text AS producto_id, MAX(d.producto_nombre) AS producto,
                        SUM(d.cantidad) AS unidades, SUM(d.cantidad * d.precio_unitario) AS facturado,
                        COUNT(DISTINCT d.orden_id) AS ordenes, MAX(v.fecha) AS ultima_venta
                 FROM ventas_detalle d JOIN ventas v ON v.orden_id = d.orden_id
-                WHERE v.{PAGADAS} AND v.fecha BETWEEN %(desde)s AND %(hasta)s
+                WHERE v.{PAGADAS} AND v.fecha BETWEEN %(desde)s AND %(hasta)s {cond}
                 GROUP BY d.producto_id ORDER BY facturado DESC
-            """, {"desde": desde, "hasta": hasta})
+            """, p)
             filas = [f for f in filas if clasificar(f["producto"])[1] == sub]
             return jsonify({"ok": True, "filas": filas})
 
@@ -707,17 +723,20 @@ def categorias():
             agg = {}
             for r in _q(f"""
                 SELECT TO_CHAR(v.fecha, 'YYYY-MM') AS mes, d.producto_nombre AS nombre,
+                       COALESCE(v.tipo, 'minorista') AS tipo, {EDAD_SQL} AS edad,
+                       (EXTRACT(DAY FROM v.fecha) <= EXTRACT(DAY FROM {HOY_AR}))::int AS p,
                        SUM(d.cantidad) AS unidades, SUM(d.cantidad * d.precio_unitario) AS facturado
                 FROM ventas_detalle d JOIN ventas v ON v.orden_id = d.orden_id
                 WHERE v.{PAGADAS}
-                GROUP BY 1, 2
+                GROUP BY 1, 2, 3, 4, 5
             """):
                 g, s = clasificar(r["nombre"])
-                a = agg.setdefault((r["mes"], g, s), [0, 0.0])
+                a = agg.setdefault((r["mes"], g, s, r["tipo"], r["edad"], r["p"]), [0, 0.0])
                 a[0] += r["unidades"] or 0
                 a[1] += r["facturado"] or 0
-            return [{"mes": m, "grupo": g, "sub": s, "unidades": u, "facturado": f}
-                    for (m, g, s), (u, f) in sorted(agg.items())]
-        return jsonify({"ok": True, "filas": _cacheado("categorias", calcular)})
+            # Formato compacto (muchas filas): [mes, grupo, sub, tipo, edad, p, unidades, facturado]
+            return [[m, g, s, t, e, pp, u, round(f)] for (m, g, s, t, e, pp), (u, f) in sorted(agg.items())]
+        filas = _cacheado("categorias2", calcular)
+        return jsonify({"ok": True, "hoy": rn.ahora_ar().date().isoformat(), "filas": filas})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

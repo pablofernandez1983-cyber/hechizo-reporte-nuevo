@@ -298,6 +298,8 @@ def db_exec_many(sql, rows):
         _db_conn = None  # fuerza reconexión en el próximo intento
         return False
 
+from edad_dni import anio_nacimiento_orden
+
 def guardar_ventas_db(orders):
     if not DATABASE_URL: return
     log("  DB: guardando ventas...")
@@ -325,20 +327,21 @@ def guardar_ventas_db(orders):
             o.get("payment_status",""), o.get("shipping_status",""),
             str(o.get("gateway_name","") or o.get("gateway","")),
             str(o.get("shipping_tracking_number","") or ""),
-            dt,
+            dt, anio_nacimiento_orden(o),
         ))
     sql = """
         INSERT INTO ventas
             (orden_id, fecha, anio, mes, cliente, email,
              subtotal, descuento, envio_cobrado, total,
-             tipo, carrier, estado_pago, estado_envio, medio_pago, tracking, creada)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             tipo, carrier, estado_pago, estado_envio, medio_pago, tracking, creada, nacimiento_est)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (orden_id) DO UPDATE SET
             subtotal=EXCLUDED.subtotal, descuento=EXCLUDED.descuento,
             envio_cobrado=EXCLUDED.envio_cobrado, total=EXCLUDED.total,
             tipo=EXCLUDED.tipo, carrier=EXCLUDED.carrier,
             estado_pago=EXCLUDED.estado_pago, estado_envio=EXCLUDED.estado_envio,
-            tracking=EXCLUDED.tracking, creada=EXCLUDED.creada
+            tracking=EXCLUDED.tracking, creada=EXCLUDED.creada,
+            nacimiento_est=COALESCE(EXCLUDED.nacimiento_est, ventas.nacimiento_est)
     """
     ok = db_exec_many(sql, rows)
     if ok: log(f"  DB: {len(rows)} ventas guardadas")
